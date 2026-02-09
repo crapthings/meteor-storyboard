@@ -1,0 +1,18 @@
+node_modules/
+
+# Meteor Modern-Tools build context directories
+_build
+*/build-assets
+*/build-chunks
+.rsdoctor
+.env
+
+# Meteor local files
+.meteor/local/
+.meteor/.finished-upgraders
+.meteor/.id
+
+public/assets/
+.DS_Store
+
+settings.json
