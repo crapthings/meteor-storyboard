@@ -1,4 +1,5 @@
 export * from './text-to-image'
 export * from './image-edit'
+export * from './image-to-lipsync'
 export * from './speech'
 export * from './video'

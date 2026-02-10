@@ -2,12 +2,14 @@ import { Meteor } from 'meteor/meteor'
 import { ASSET_TASKS } from '/imports/configs/tasks/assets'
 import { FAL_TEXT_TO_IMAGE_MODELS } from '/imports/configs/models/fal/text-to-image'
 import { FAL_IMAGE_EDIT_MODELS } from '/imports/configs/models/fal/image-edit'
+import { FAL_IMAGE_TO_LIPSYNC_MODELS } from '/imports/configs/models/fal/image-to-lipsync'
 import { FAL_VIDEO_MODELS } from '/imports/configs/models/fal/video'
 import { FAL_SPEECH_MODELS } from '/imports/configs/models/fal/speech'
 
 const modelSets = [
   FAL_TEXT_TO_IMAGE_MODELS,
   FAL_IMAGE_EDIT_MODELS,
+  FAL_IMAGE_TO_LIPSYNC_MODELS,
   FAL_VIDEO_MODELS,
   FAL_SPEECH_MODELS
 ]
@@ -31,6 +33,7 @@ const DEFAULT_MODEL_KEY_BY_TASK = {
   [ASSET_TASKS.IMAGE_EDIT]: FAL_IMAGE_EDIT_MODELS.default.key,
   [ASSET_TASKS.TEXT_TO_VIDEO]: FAL_VIDEO_MODELS.textToVideo.key,
   [ASSET_TASKS.IMAGE_TO_VIDEO]: FAL_VIDEO_MODELS.imageToVideo.key,
+  [ASSET_TASKS.LIP_SYNC_IMAGE]: FAL_IMAGE_TO_LIPSYNC_MODELS.klingAvatarV2Standard.key,
   [ASSET_TASKS.TTS]: FAL_SPEECH_MODELS.default.key
 }
 

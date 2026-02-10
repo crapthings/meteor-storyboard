@@ -1,6 +1,7 @@
 import { Meteor } from 'meteor/meteor'
 import { StoryboardsCollection } from '/imports/api/storyboards'
 import { ShotsCollection } from '/imports/api/shots'
+import { recomputeStoryboardAssetStats } from '/imports/server/stats/asset-stats'
 
 const isObject = (value) => (
   value && typeof value === 'object' && !Array.isArray(value)
@@ -15,6 +16,13 @@ Meteor.methods({
       description: (description || '').trim(),
       aspectRatio: aspectRatio || '16:9',
       order,
+      stats: {
+        shotCount: 0,
+        assetCount: 0,
+        imageCount: 0,
+        videoCount: 0,
+        audioCount: 0
+      },
       createdAt: new Date()
     })
 
@@ -25,6 +33,7 @@ Meteor.methods({
       assets: [],
       createdAt: new Date()
     })
+    await recomputeStoryboardAssetStats({ storyboardId })
 
     return storyboardId
   },

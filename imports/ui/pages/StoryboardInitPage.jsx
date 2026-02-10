@@ -10,7 +10,7 @@ import {
 } from "@dnd-kit/core";
 import { Meteor } from "meteor/meteor";
 import { useFind, useSubscribe } from "meteor/react-meteor-data";
-import { useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import {
   AlertDialog,
   Button,
@@ -35,6 +35,7 @@ import { AssetsCollection } from "../../api/assets.js";
 import { AssetCard } from "../components/AssetCard.jsx";
 import { FAL_TEXT_TO_IMAGE_MODELS } from "../../configs/models/fal/text-to-image.js";
 import { FAL_IMAGE_EDIT_MODELS } from "../../configs/models/fal/image-edit.js";
+import { FAL_IMAGE_TO_LIPSYNC_MODELS } from "../../configs/models/fal/image-to-lipsync.js";
 import { FAL_VIDEO_MODELS } from "../../configs/models/fal/video.js";
 import { FAL_SPEECH_MODELS } from "../../configs/models/fal/speech.js";
 
@@ -145,6 +146,12 @@ const MODEL_PICKER_COLUMNS = [
     label: "text to speech",
     options: Object.values(FAL_SPEECH_MODELS),
     defaultModel: FAL_SPEECH_MODELS.default?.key,
+  },
+  {
+    id: "imageLipSync",
+    label: "image lip sync",
+    options: Object.values(FAL_IMAGE_TO_LIPSYNC_MODELS),
+    defaultModel: FAL_IMAGE_TO_LIPSYNC_MODELS.klingAvatarV2Standard?.key,
   },
 ];
 
@@ -506,6 +513,7 @@ const StoryboardPropsForm = ({ storyboard, onClose }) => {
 
 export const StoryboardInitPage = () => {
   const { storyboardId } = useParams();
+  const navigate = useNavigate();
   const isStoryboardsLoading = useSubscribe("storyboards");
   const isShotsLoading = useSubscribe("shots", storyboardId);
   const isAssetsLoading = useSubscribe("assets", storyboardId);
@@ -855,6 +863,17 @@ export const StoryboardInitPage = () => {
     });
   };
 
+  const handleGenerateLipSyncAsset = async (shotId, rowId, updates) => {
+    if (!storyboardId) return;
+    if (rowId !== "audio") return;
+    await Meteor.callAsync("assets.lipSyncImage", {
+      storyboardId,
+      shotId,
+      prompt: updates.prompt,
+      model: getSelectedModel("imageLipSync"),
+    });
+  };
+
   const handleUploadAsset = async (shotId, rowId, file) => {
     if (!storyboardId || !file) return;
     let uploadFile = file;
@@ -1060,15 +1079,23 @@ export const StoryboardInitPage = () => {
   };
 
   return (
-    <div className="flex w-full flex-col gap-6 bg-neutral-50 px-4 py-6 sm:px-6 lg:px-8">
-      <header className="flex flex-col gap-4 bg-neutral-900 px-4 py-4 sm:px-5 sm:py-5">
+    <div className="flex w-full flex-col gap-2 bg-neutral-50 p-2">
+      <header className="flex flex-col gap-2 bg-neutral-900 p-2">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-semibold text-neutral-50">
+          <div className="flex items-center gap-2">
+            <Button
+              variant="tertiary"
+              size="sm"
+              className="h-8 rounded-full bg-neutral-600 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50"
+              onPress={() => navigate("/")}
+            >
+              Back
+            </Button>
+            <h1 className="text-xl font-semibold text-neutral-50">
               {activeStoryboard?.name || "Storyboard"}
             </h1>
           </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
             <input
               ref={sourceVideoInputRef}
               type="file"
@@ -1087,21 +1114,13 @@ export const StoryboardInitPage = () => {
             />
             <Button
               variant="tertiary"
-              className="rounded-full px-3 text-[11px] font-semibold uppercase tracking-[0.2em]"
-              onPress={() => sourceVideoInputRef.current?.click()}
-              isDisabled={isImporting}
+              size="sm"
+              onPress={handleAddShot}
+              className="h-8 rounded-full bg-neutral-50 px-3 text-[10px] text-neutral-900 hover:bg-neutral-300"
             >
-              Import Source Video
+              Add Shot
             </Button>
-            <Button
-              variant="tertiary"
-              className="rounded-full px-3 text-[11px] font-semibold uppercase tracking-[0.2em]"
-              onPress={() => sourceImageInputRef.current?.click()}
-              isDisabled={isImporting}
-            >
-              Import Source Image
-            </Button>
-            <div className="flex items-center gap-2 rounded-full bg-neutral-600 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-neutral-50">
+            <div className="flex h-8 items-center gap-2 rounded-full bg-neutral-600 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50">
               <span>Ratio</span>
               <div className="flex overflow-hidden rounded-full bg-neutral-50">
                 {["16:9", "9:16"].map((ratio) => (
@@ -1114,7 +1133,7 @@ export const StoryboardInitPage = () => {
                         aspectRatio: ratio,
                       })
                     }
-                    className={`px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] transition ${
+                    className={`px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] transition ${
                       (activeStoryboard?.aspectRatio || "16:9") === ratio
                         ? "bg-neutral-900 text-neutral-50"
                         : "text-neutral-700 hover:bg-neutral-300"
@@ -1127,38 +1146,24 @@ export const StoryboardInitPage = () => {
             </div>
             <Button
               variant="tertiary"
-              onPress={handleAddShot}
-              className="rounded-full bg-neutral-50 px-5 text-neutral-900 hover:bg-neutral-300"
+              size="sm"
+              className="h-8 rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.16em]"
+              onPress={() => sourceVideoInputRef.current?.click()}
+              isDisabled={isImporting}
             >
-              Add Shot
+              Import Source Video
             </Button>
-            <button
-              type="button"
-              onClick={() => setIsSettingsOpen(true)}
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-600 text-neutral-50 transition hover:bg-neutral-300 hover:text-neutral-900"
-              aria-label="Storyboard settings"
+            <Button
+              variant="tertiary"
+              size="sm"
+              className="h-8 rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.16em]"
+              onPress={() => sourceImageInputRef.current?.click()}
+              isDisabled={isImporting}
             >
-              <svg
-                viewBox="0 0 24 24"
-                className="h-5 w-5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
-                />
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M19.4 15a1.6 1.6 0 0 0 .32 1.74l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.6 1.6 0 0 0 15 19.4a1.6 1.6 0 0 0-1 .29 1.6 1.6 0 0 0-.66 1.3V21a2 2 0 1 1-4 0v-.01a1.6 1.6 0 0 0-1.66-1.59 1.6 1.6 0 0 0-1 .29l-.06.06A2 2 0 1 1 3.8 18.8l.06-.06A1.6 1.6 0 0 0 4.1 17a1.6 1.6 0 0 0-.29-1 1.6 1.6 0 0 0-1.3-.66H2.5a2 2 0 1 1 0-4h.01A1.6 1.6 0 0 0 4.1 9.7a1.6 1.6 0 0 0-.29-1l-.06-.06A2 2 0 1 1 6.6 5.8l.06.06A1.6 1.6 0 0 0 8.3 6.1a1.6 1.6 0 0 0 1-.29 1.6 1.6 0 0 0 .66-1.3V4.5a2 2 0 1 1 4 0v.01a1.6 1.6 0 0 0 1.66 1.59 1.6 1.6 0 0 0 1-.29l.06-.06A2 2 0 1 1 20.2 8.2l-.06.06a1.6 1.6 0 0 0-.29 1 1.6 1.6 0 0 0 .29 1 1.6 1.6 0 0 0 1.3.66H22a2 2 0 1 1 0 4h-.01a1.6 1.6 0 0 0-1.59 1.66Z"
-                />
-              </svg>
-            </button>
+              Import Source Image
+            </Button>
             <AlertDialog>
-              <AlertDialog.Trigger className="flex items-center gap-2 rounded-full bg-neutral-600 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-neutral-50 transition hover:bg-neutral-300 hover:text-neutral-900">
+              <AlertDialog.Trigger className="flex h-8 items-center gap-2 rounded-full bg-neutral-600 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50 transition hover:bg-neutral-300 hover:text-neutral-900">
                 Clear Shots
               </AlertDialog.Trigger>
               <AlertDialog.Backdrop>
@@ -1207,13 +1212,38 @@ export const StoryboardInitPage = () => {
                 </AlertDialog.Container>
               </AlertDialog.Backdrop>
             </AlertDialog>
+            <button
+              type="button"
+              onClick={() => setIsSettingsOpen(true)}
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-neutral-600 text-neutral-50 transition hover:bg-neutral-300 hover:text-neutral-900"
+              aria-label="Storyboard settings"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
+                />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M19.4 15a1.6 1.6 0 0 0 .32 1.74l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.6 1.6 0 0 0 15 19.4a1.6 1.6 0 0 0-1 .29 1.6 1.6 0 0 0-.66 1.3V21a2 2 0 1 1-4 0v-.01a1.6 1.6 0 0 0-1.66-1.59 1.6 1.6 0 0 0-1 .29l-.06.06A2 2 0 1 1 3.8 18.8l.06-.06A1.6 1.6 0 0 0 4.1 17a1.6 1.6 0 0 0-.29-1 1.6 1.6 0 0 0-1.3-.66H2.5a2 2 0 1 1 0-4h.01A1.6 1.6 0 0 0 4.1 9.7a1.6 1.6 0 0 0-.29-1l-.06-.06A2 2 0 1 1 6.6 5.8l.06.06A1.6 1.6 0 0 0 8.3 6.1a1.6 1.6 0 0 0 1-.29 1.6 1.6 0 0 0 .66-1.3V4.5a2 2 0 1 1 4 0v.01a1.6 1.6 0 0 0 1.66 1.59 1.6 1.6 0 0 0 1-.29l.06-.06A2 2 0 1 1 20.2 8.2l-.06.06a1.6 1.6 0 0 0-.29 1 1.6 1.6 0 0 0 .29 1 1.6 1.6 0 0 0 1.3.66H22a2 2 0 1 1 0 4h-.01a1.6 1.6 0 0 0-1.59 1.66Z"
+                />
+              </svg>
+            </button>
           </div>
         </div>
       </header>
 
       {activeStoryboard ? (
         <section className="bg-neutral-200 p-2">
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-7">
             {MODEL_PICKER_COLUMNS.map((column) => (
               <div key={column.id} className="bg-neutral-50 p-2">
                 <Select
@@ -1324,6 +1354,13 @@ export const StoryboardInitPage = () => {
                             ? Boolean(getPrimaryImageAsset(shot)?._id) &&
                               Boolean(getPrimaryImageAsset(nextShot)?._id)
                             : false;
+                        const audioInputAsset = getActiveAsset(shot, "audio");
+                        const lipSyncImageAsset = getPrimaryImageAsset(shot);
+                        const hasLipSync =
+                          row.id === "audio"
+                            ? Boolean(audioInputAsset?.url) &&
+                              Boolean(lipSyncImageAsset?.url)
+                            : false;
                         const sourceImageAsset = getActiveAsset(shot, "source-image");
                         const hasSourceImageInput =
                           row.id === "edit-image"
@@ -1355,6 +1392,9 @@ export const StoryboardInitPage = () => {
                             onGenerateReference={(updates) =>
                               handleGenerateReferenceAsset(shot._id, row.id, updates)
                             }
+                            onGenerateLipSync={(updates) =>
+                              handleGenerateLipSyncAsset(shot._id, row.id, updates)
+                            }
                             onGenerateTailFrame={(updates) =>
                               handleGenerateTailFrameVideo(shot._id, updates)
                             }
@@ -1364,6 +1404,7 @@ export const StoryboardInitPage = () => {
                             hasReference={Boolean(referenceAsset)}
                             hasTailFrame={hasTailFrame}
                             hasStartEnd={hasStartEnd}
+                            hasLipSync={hasLipSync}
                             hasSourceInput={hasSourceImageInput}
                             canDropAsset={canDropAsset}
                             isDropEnabled={Boolean(activeDraggedAsset)}
@@ -1416,11 +1457,13 @@ export const StoryboardInitPage = () => {
                         onGenerateTailFrame={() => {}}
                         onGenerateStartEnd={() => {}}
                         onGenerateReference={() => {}}
+                        onGenerateLipSync={() => {}}
                         hasReference={false}
                         hasCurrent={false}
                         hasSourceInput={false}
                         hasTailFrame={false}
                         hasStartEnd={false}
+                        hasLipSync={false}
                         canDropAsset={false}
                         isDropEnabled={false}
                         onUpdateVideoMetadata={() => {}}

@@ -68,7 +68,13 @@ const normalizeTaskResult = ({ task, result }) => {
   if (task === ASSET_TASKS.TEXT_TO_IMAGE || task === ASSET_TASKS.IMAGE_EDIT) {
     return getImageResult(result)
   }
-  if (task === ASSET_TASKS.TEXT_TO_VIDEO || task === ASSET_TASKS.IMAGE_TO_VIDEO || task === ASSET_TASKS.VIDEO_TO_VIDEO) {
+  if (
+    task === ASSET_TASKS.TEXT_TO_VIDEO ||
+    task === ASSET_TASKS.IMAGE_TO_VIDEO ||
+    task === ASSET_TASKS.VIDEO_TO_VIDEO ||
+    task === ASSET_TASKS.LIP_SYNC_IMAGE ||
+    task === ASSET_TASKS.LIP_SYNC_VIDEO
+  ) {
     return getVideoResult(result)
   }
   if (task === ASSET_TASKS.TTS) {

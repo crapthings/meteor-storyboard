@@ -1,6 +1,10 @@
 import { Meteor } from 'meteor/meteor'
 import { ShotsCollection } from '/imports/api/shots'
 import { AssetsCollection } from '/imports/api/assets'
+import {
+  recomputeAssetStatsForShotAndStoryboard,
+  recomputeStoryboardAssetStats
+} from '/imports/server/stats/asset-stats'
 
 Meteor.methods({
   async 'shots.move' ({ shotId, row, column }) {
@@ -20,13 +24,15 @@ Meteor.methods({
       typeof order === 'number'
         ? order
         : await ShotsCollection.find({ storyboardId }).countAsync()
-    return ShotsCollection.insertAsync({
+    const shotId = await ShotsCollection.insertAsync({
       storyboardId,
       name: (name || `Shot ${count + 1}`).trim(),
       order: count,
       assets: [],
       createdAt: new Date()
     })
+    await recomputeAssetStatsForShotAndStoryboard({ storyboardId, shotId })
+    return shotId
   },
   async 'shots.update' ({ shotId, name, order, assets }) {
     if (!shotId) {
@@ -43,7 +49,11 @@ Meteor.methods({
     if (!shotId) {
       throw new Meteor.Error('shots.remove.invalid', 'Invalid payload.')
     }
+    const shot = await ShotsCollection.findOneAsync(shotId)
+    if (!shot) return
     await ShotsCollection.removeAsync(shotId)
+    await AssetsCollection.removeAsync({ shotId })
+    await recomputeStoryboardAssetStats({ storyboardId: shot.storyboardId })
   },
   async 'shots.reorder' ({ storyboardId, orderedIds }) {
     if (!storyboardId || !Array.isArray(orderedIds)) {
@@ -65,5 +75,6 @@ Meteor.methods({
     }
     await ShotsCollection.removeAsync({ storyboardId })
     await AssetsCollection.removeAsync({ storyboardId })
+    await recomputeStoryboardAssetStats({ storyboardId })
   }
 })

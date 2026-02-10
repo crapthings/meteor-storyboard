@@ -6,6 +6,7 @@ import fsSync from 'node:fs'
 import path from 'node:path'
 import { AssetsCollection } from '/imports/api/assets'
 import { ShotsCollection } from '/imports/api/shots'
+import { recomputeAssetStatsForShotAndStoryboard } from '/imports/server/stats/asset-stats'
 
 const MAX_BYTES = 512 * 1024 * 1024
 const ALLOWED_TYPES = new Set([
@@ -546,6 +547,7 @@ WebApp.connectHandlers.use('/api/assets/upload', async (req, res) => {
         $set: { [activeField]: assetId, updatedAt: new Date() }
       })
     }
+    await recomputeAssetStatsForShotAndStoryboard({ storyboardId, shotId })
 
     json(res, 200, { assetId, url: publicUrl })
   } catch (error) {

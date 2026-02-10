@@ -4,6 +4,7 @@ import { ShotsCollection } from '/imports/api/shots'
 import { falSubscribe, falStorageUpload } from '/imports/server/fal/client'
 import { ASSET_TASKS } from '/imports/configs/tasks/assets'
 import { runAssetTask } from '/imports/server/ai/run-task'
+import { recomputeAssetStatsForShotAndStoryboard } from '/imports/server/stats/asset-stats'
 
 const ACTIVE_FIELD_BY_ROW = {
   'source-clip': 'activeSourceVideoId',
@@ -111,6 +112,7 @@ const createPendingAsset = async ({ storyboardId, shotId, rowId, prompt }) => {
     createdAt: new Date()
   })
   await setActiveAsset({ shotId, rowId, assetId })
+  await recomputeAssetStatsForShotAndStoryboard({ storyboardId, shotId })
   return assetId
 }
 
@@ -186,7 +188,7 @@ Meteor.methods({
       throw new Meteor.Error('assets.create.invalid', 'Invalid payload.')
     }
 
-    return AssetsCollection.insertAsync({
+    const assetId = await AssetsCollection.insertAsync({
       storyboardId,
       shotId,
       rowId,
@@ -195,6 +197,8 @@ Meteor.methods({
       meta: meta || {},
       createdAt: new Date()
     })
+    await recomputeAssetStatsForShotAndStoryboard({ storyboardId, shotId })
+    return assetId
   },
   async 'assets.update' ({ assetId, prompt, url, meta, duration }) {
     if (!assetId) {
@@ -216,7 +220,14 @@ Meteor.methods({
     if (!assetId) {
       throw new Meteor.Error('assets.remove.invalid', 'Invalid payload.')
     }
+    const asset = await AssetsCollection.findOneAsync(assetId)
     await AssetsCollection.removeAsync(assetId)
+    if (asset?.storyboardId && asset?.shotId) {
+      await recomputeAssetStatsForShotAndStoryboard({
+        storyboardId: asset.storyboardId,
+        shotId: asset.shotId
+      })
+    }
   },
   async 'assets.duplicate' ({ storyboardId, sourceAssetId, targetShotId, targetRowId }) {
     if (!storyboardId || !sourceAssetId || !targetShotId || !targetRowId) {
@@ -262,6 +273,10 @@ Meteor.methods({
       shotId: targetShotId,
       rowId: targetRowId,
       assetId
+    })
+    await recomputeAssetStatsForShotAndStoryboard({
+      storyboardId,
+      shotId: targetShotId
     })
 
     return assetId
@@ -424,6 +439,41 @@ Meteor.methods({
     } catch (error) {
       await markAssetStatus(assetId, 'error', {
         error: error?.message || 'tts-failed'
+      })
+      throw error
+    }
+  },
+  async 'assets.lipSyncImage' ({ storyboardId, shotId, prompt, model }) {
+    if (!storyboardId || !shotId) {
+      throw new Meteor.Error('assets.lipSyncImage.invalid', 'Invalid payload.')
+    }
+
+    const rowId = 'output-video'
+    const normalizedPrompt = typeof prompt === 'string' && prompt.trim()
+      ? String(prompt).trim()
+      : '.'
+    const assetId = await createPendingAsset({ storyboardId, shotId, rowId, prompt: normalizedPrompt })
+    await markAssetStatus(assetId, 'processing')
+
+    try {
+      const generated = await runAssetTask({
+        task: ASSET_TASKS.LIP_SYNC_IMAGE,
+        model,
+        shotId,
+        preferredImageRows: ['edit-image', 'source-image'],
+        preferredAudioRows: ['audio'],
+        params: {
+          prompt: normalizedPrompt
+        },
+        findActiveAssetByRow,
+        uploadFromUrl,
+        falSubscribe
+      })
+      await saveGeneratedVideo({ assetId, prompt: normalizedPrompt, video: generated.asset })
+      return assetId
+    } catch (error) {
+      await markAssetStatus(assetId, 'error', {
+        error: error?.message || 'lip-sync-image-failed'
       })
       throw error
     }

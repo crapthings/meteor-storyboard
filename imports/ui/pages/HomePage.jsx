@@ -15,6 +15,11 @@ const formatDateLabel = (value) => {
 const getStoryboardDescription = (storyboard) =>
   storyboard?.description || "Add a short description for this storyboard.";
 
+const getCount = (storyboard, key) => {
+  const value = storyboard?.stats?.[key]
+  return typeof value === 'number' ? value : 0
+}
+
 export const HomePage = () => {
   const navigate = useNavigate();
   const [isCreating, setIsCreating] = useState(false);
@@ -133,6 +138,23 @@ export const HomePage = () => {
                     <p className="mt-4 text-xs uppercase tracking-[0.14em] text-neutral-600">
                       Updated {formatDateLabel(storyboard.updatedAt || storyboard.createdAt)}
                     </p>
+                    <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-neutral-700">
+                      <div className="bg-neutral-200 px-2 py-1">
+                        Shots {getCount(storyboard, 'shotCount')}
+                      </div>
+                      <div className="bg-neutral-200 px-2 py-1">
+                        Assets {getCount(storyboard, 'assetCount')}
+                      </div>
+                      <div className="bg-neutral-200 px-2 py-1">
+                        Images {getCount(storyboard, 'imageCount')}
+                      </div>
+                      <div className="bg-neutral-200 px-2 py-1">
+                        Videos {getCount(storyboard, 'videoCount')}
+                      </div>
+                      <div className="bg-neutral-200 px-2 py-1">
+                        Audio {getCount(storyboard, 'audioCount')}
+                      </div>
+                    </div>
                   </div>
                   <div className="mt-5 flex flex-wrap gap-2">
                     <Button

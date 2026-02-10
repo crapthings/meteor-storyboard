@@ -118,12 +118,14 @@ export const AssetCard = ({
   onGenerateCurrent,
   onGenerateTailFrame,
   onGenerateStartEnd,
+  onGenerateLipSync,
   onGenerateReference,
   hasReference,
   hasCurrent,
   hasSourceInput,
   hasTailFrame,
   hasStartEnd,
+  hasLipSync,
   canDropAsset,
   isDropEnabled,
   onUpdateVideoMetadata,
@@ -345,6 +347,12 @@ export const AssetCard = ({
     if (!row.hasPrompt || !hasStartEnd) return;
     const nextPrompt = prompt.trim();
     onGenerateStartEnd({ prompt: nextPrompt });
+  };
+
+  const handleGenerateLipSync = () => {
+    if (!row.hasPrompt || !hasLipSync) return;
+    const nextPrompt = prompt.trim();
+    onGenerateLipSync({ prompt: nextPrompt });
   };
 
   const status = asset?.status || "idle";
@@ -572,6 +580,13 @@ export const AssetCard = ({
                     isDisabled={status === "processing" || status === "pending"}
                   >
                     T2S
+                  </Button>
+                  <Button
+                    className="h-7 bg-neutral-600 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50"
+                    onPress={handleGenerateLipSync}
+                    isDisabled={!hasLipSync || status === "processing" || status === "pending"}
+                  >
+                    LIP
                   </Button>
                 </ButtonGroup>
               ) : row.id === "edit-image" ? (

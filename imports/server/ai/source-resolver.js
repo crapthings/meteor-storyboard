@@ -2,6 +2,7 @@ import { Meteor } from 'meteor/meteor'
 import { ASSET_TASKS } from '/imports/configs/tasks/assets'
 
 const DEFAULT_IMAGE_ROWS = ['edit-image', 'source-image']
+const DEFAULT_AUDIO_ROWS = ['audio']
 
 const hasArrayItems = (value) => Array.isArray(value) && value.length > 0
 
@@ -73,6 +74,42 @@ const resolveImageSources = async ({
   return { images: [uploadedUrl] }
 }
 
+const getAudioFromParams = (params) => {
+  if (typeof params.audioUrl === 'string' && params.audioUrl.trim()) return params.audioUrl.trim()
+  return null
+}
+
+const resolveAudioSource = async ({
+  params,
+  shotId,
+  findActiveAssetByRow,
+  uploadFromUrl,
+  preferredAudioRows = DEFAULT_AUDIO_ROWS
+}) => {
+  const audioUrl = getAudioFromParams(params)
+  if (audioUrl) return { audioUrl }
+
+  if (!shotId || typeof findActiveAssetByRow !== 'function') {
+    throw new Meteor.Error('assets.sources.missingAudio', 'Missing audio source.')
+  }
+
+  const asset = await findFirstActiveAsset({
+    shotId,
+    rows: preferredAudioRows,
+    findActiveAssetByRow
+  })
+  if (!asset?.url) {
+    throw new Meteor.Error('assets.sources.missingAudio', 'Missing audio source.')
+  }
+
+  if (typeof uploadFromUrl !== 'function') {
+    return { audioUrl: asset.url }
+  }
+
+  const uploadedUrl = await uploadFromUrl(asset.url)
+  return { audioUrl: uploadedUrl }
+}
+
 export const resolveTaskSources = async ({
   task,
   model,
@@ -80,7 +117,8 @@ export const resolveTaskSources = async ({
   shotId,
   findActiveAssetByRow,
   uploadFromUrl,
-  preferredImageRows
+  preferredImageRows,
+  preferredAudioRows
 }) => {
   if (task === ASSET_TASKS.IMAGE_EDIT || task === ASSET_TASKS.IMAGE_TO_VIDEO) {
     return resolveImageSources({
@@ -91,6 +129,27 @@ export const resolveTaskSources = async ({
       uploadFromUrl,
       preferredImageRows
     })
+  }
+
+  if (task === ASSET_TASKS.LIP_SYNC_IMAGE) {
+    const [imageSource, audioSource] = await Promise.all([
+      resolveImageSources({
+        model,
+        params,
+        shotId,
+        findActiveAssetByRow,
+        uploadFromUrl,
+        preferredImageRows
+      }),
+      resolveAudioSource({
+        params,
+        shotId,
+        findActiveAssetByRow,
+        uploadFromUrl,
+        preferredAudioRows
+      })
+    ])
+    return { ...imageSource, ...audioSource }
   }
 
   return {}
