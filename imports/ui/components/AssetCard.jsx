@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button, ButtonGroup } from "@heroui/react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import Icon from "@mdi/react";
+import { ALL_FORMATS, CanvasSink, Input, UrlSource } from "mediabunny";
 import {
   mdiContentSave,
   mdiWandSparkles,
@@ -108,6 +109,85 @@ const getVideoFpsFromElement = (video) => {
   return Math.round(fps * 100) / 100;
 };
 
+const canvasToDataUrl = (canvas) =>
+  new Promise((resolve) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        resolve(null);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve(typeof reader.result === "string" ? reader.result : null);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    }, "image/png");
+  });
+
+const getThumbnailDimensions = (videoTrack, maxSize = 320) => {
+  const width = Number(videoTrack?.displayWidth || 0);
+  const height = Number(videoTrack?.displayHeight || 0);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { width: maxSize, height: maxSize };
+  }
+  if (width >= height) {
+    return { width: maxSize, height: Math.max(1, Math.floor((maxSize * height) / width)) };
+  }
+  return { width: Math.max(1, Math.floor((maxSize * width) / height)), height: maxSize };
+};
+
+const generateThumbnailFromVideoUrl = async (videoUrl) => {
+  if (!videoUrl) return null;
+  const absoluteUrl =
+    videoUrl.startsWith("http://") || videoUrl.startsWith("https://")
+      ? videoUrl
+      : `${window.location.origin}${videoUrl.startsWith("/") ? "" : "/"}${videoUrl}`;
+  const input = new Input({
+    source: new UrlSource(absoluteUrl),
+    formats: ALL_FORMATS,
+  });
+  const videoTrack = await input.getPrimaryVideoTrack();
+  if (!videoTrack) return null;
+  if (videoTrack.codec === null) return null;
+  const canDecode = await videoTrack.canDecode();
+  if (!canDecode) return null;
+
+  const firstTimestamp = await videoTrack.getFirstTimestamp();
+  const duration = await videoTrack.computeDuration();
+  const safeDuration =
+    Number.isFinite(duration) && duration > 0 ? duration : 0;
+  const timestamp = firstTimestamp + safeDuration * 0.25;
+  const size = getThumbnailDimensions(videoTrack, 320);
+  const dpr = window.devicePixelRatio || 1;
+  const sink = new CanvasSink(videoTrack, {
+    width: Math.max(1, Math.floor(size.width * dpr)),
+    height: Math.max(1, Math.floor(size.height * dpr)),
+    fit: "fill",
+  });
+  for await (const wrappedCanvas of sink.canvasesAtTimestamps([timestamp])) {
+    if (!wrappedCanvas?.canvas) return null;
+    return canvasToDataUrl(wrappedCanvas.canvas);
+  }
+  return null;
+};
+
+const withTimeout = async (promise, ms, label) => {
+  let timeoutId;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${ms}ms`));
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
+
 export const AssetCard = ({
   shotId,
   row,
@@ -139,6 +219,7 @@ export const AssetCard = ({
   const [isWaveformUploading, setIsWaveformUploading] = useState(false);
   const [isThumbnailUploading, setIsThumbnailUploading] = useState(false);
   const metadataSyncedRef = useRef(new Set());
+  const thumbnailAttemptedRef = useRef(new Set());
   const dropId = `slot:${shotId}:${row.id}`;
   const draggableId = `asset:${asset?._id || `${shotId}:${row.id}:empty`}`;
   const { setNodeRef: setDropNodeRef, isOver } = useDroppable({
@@ -255,63 +336,50 @@ export const AssetCard = ({
     if (row.id !== "source-clip" && row.id !== "output-video") return;
     if (!asset?.url) return;
     if (asset?.thumbnailUrl) return;
-    if (isThumbnailUploading) return;
-
-    const video = document.createElement("video");
-    video.src = asset.url;
-    video.preload = "metadata";
-    video.muted = true;
-    video.playsInline = true;
-
-    const handleLoadedData = async () => {
+    if (!asset?._id) return;
+    if (thumbnailAttemptedRef.current.has(asset._id)) return;
+    let disposed = false;
+    thumbnailAttemptedRef.current.add(asset._id);
+    const run = async () => {
       try {
         setIsThumbnailUploading(true);
-        if (!video.videoWidth || !video.videoHeight) return;
-
-        const targetSize = 320;
-        const width =
-          video.videoWidth > video.videoHeight
-            ? targetSize
-            : Math.floor((targetSize * video.videoWidth) / video.videoHeight);
-        const height =
-          video.videoHeight > video.videoWidth
-            ? targetSize
-            : Math.floor((targetSize * video.videoHeight) / video.videoWidth);
-        const dpr = window.devicePixelRatio || 1;
-
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.floor(width * dpr);
-        canvas.height = Math.floor(height * dpr);
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-
-        ctx.scale(dpr, dpr);
-        ctx.drawImage(video, 0, 0, width, height);
-        const dataUrl = canvas.toDataURL("image/png");
-
-        await fetch("/api/assets/thumbnail", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            assetId: asset._id,
-            dataUrl,
+        const dataUrl = await withTimeout(
+          generateThumbnailFromVideoUrl(asset.url),
+          15000,
+          "thumbnail extraction"
+        );
+        if (disposed || !dataUrl) return;
+        const response = await withTimeout(
+          fetch("/api/assets/thumbnail", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              assetId: asset._id,
+              dataUrl,
+            }),
           }),
-        });
+          10000,
+          "thumbnail upload"
+        );
+        if (!response?.ok) {
+          throw new Error(`thumbnail upload failed: ${response?.status || "unknown"}`);
+        }
+      } catch (error) {
+        // Keep UI responsive when thumbnail extraction fails (e.g. remote CORS video URL).
+        console.error("thumbnail generation failed", error);
       } finally {
-        setIsThumbnailUploading(false);
+        if (!disposed) {
+          setIsThumbnailUploading(false);
+        }
       }
     };
-
-    video.addEventListener("loadeddata", handleLoadedData, {
-      once: true,
-    });
-
+    void run();
     return () => {
-      video.removeEventListener("loadeddata", handleLoadedData);
+      disposed = true;
     };
-  }, [asset?._id, asset?.thumbnailUrl, asset?.url, isThumbnailUploading, row.id]);
+  }, [asset?._id, asset?.thumbnailUrl, asset?.url, row.id]);
 
   const handleSave = () => {
     if (!row.hasPrompt) return;

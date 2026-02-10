@@ -149,7 +149,7 @@ const MODEL_PICKER_COLUMNS = [
   },
   {
     id: "imageLipSync",
-    label: "image lip sync",
+    label: "image to lipsync",
     options: Object.values(FAL_IMAGE_TO_LIPSYNC_MODELS),
     defaultModel: FAL_IMAGE_TO_LIPSYNC_MODELS.klingAvatarV2Standard?.key,
   },

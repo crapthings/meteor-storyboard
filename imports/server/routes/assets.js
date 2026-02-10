@@ -139,7 +139,8 @@ const getContentTypeByExt = (extname) => {
 
 const parseByteRange = (rangeHeader, fileSize) => {
   if (!rangeHeader || typeof rangeHeader !== 'string') return null
-  const match = rangeHeader.match(/^bytes=(\d*)-(\d*)$/i)
+  const firstRange = rangeHeader.split(',')[0]?.trim()
+  const match = firstRange?.match(/^bytes=(\d*)-(\d*)$/i)
   if (!match) return 'invalid'
 
   const startRaw = match[1]
