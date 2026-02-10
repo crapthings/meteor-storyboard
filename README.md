@@ -56,9 +56,14 @@ Use **Meteor settings** and set your asset path:
 ```json
 {
   "FAL_KEY": "YOUR_KEY",
-  "ASSETS_FOLDER": "/absolute/path/to/public/assets"
+  "ASSETS_FOLDER": "/absolute/path/to/assets",
+  "ASSETS_URL_PREFIX": "/assets"
 }
 ```
+
+Notes:
+- `ASSETS_FOLDER` (or `ASSETS_STATIC_DIR`) controls where uploaded files are stored.
+- `ASSETS_URL_PREFIX` (or `ASSETS_STATIC_PREFIX`) controls the public static URL prefix.
 
 Run with:
 
@@ -138,7 +143,7 @@ All generations:
 
 - Tailwind is used **inline** for all styling.
 - Storyboard UI is full-width and optimized for horizontal scroll.
-- Local file uploads are saved under `public/assets` (or `ASSETS_FOLDER`).
+- Local file uploads are saved under `public/assets` (or `ASSETS_FOLDER`) and served from `ASSETS_URL_PREFIX`.
 
 ---
 

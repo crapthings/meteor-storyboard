@@ -5,6 +5,16 @@ import { useFind, useSubscribe } from "meteor/react-meteor-data";
 import { Button } from "@heroui/react";
 import { StoryboardsCollection } from "../../api/storyboards.js";
 
+const formatDateLabel = (value) => {
+  if (!value) return "No date";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "No date";
+  return date.toLocaleDateString();
+};
+
+const getStoryboardDescription = (storyboard) =>
+  storyboard?.description || "Add a short description for this storyboard.";
+
 export const HomePage = () => {
   const navigate = useNavigate();
   const [isCreating, setIsCreating] = useState(false);
@@ -40,96 +50,113 @@ export const HomePage = () => {
   };
 
   return (
-    <div className="flex w-full flex-col gap-10 px-4 py-8 sm:px-6 lg:px-8">
-      <section className="relative overflow-hidden rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-slate-50 px-6 py-8 shadow-sm sm:px-10 sm:py-10">
-        <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
-          <div className="max-w-2xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-emerald-600">
-              Storyboards
-            </p>
-            <h1 className="mt-3 text-3xl font-semibold text-slate-900 sm:text-4xl">
-              Plan shots, align assets, ship faster.
-            </h1>
-            <p className="mt-3 text-base text-slate-600 sm:text-lg">
-              Build visual sequences for each deliverable and control the render
-              order with drag-and-drop columns.
-            </p>
+    <div className="min-h-full w-full bg-neutral-50 px-4 py-8 sm:px-6 lg:px-8">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
+        <section className="bg-neutral-900 p-6 sm:p-8">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="max-w-3xl">
+              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-neutral-300">
+                Storyboards
+              </p>
+              <h1 className="mt-3 text-3xl font-semibold tracking-tight text-neutral-50 sm:text-4xl">
+                Organize sequences before rendering.
+              </h1>
+              <p className="mt-3 text-sm text-neutral-300 sm:text-base">
+                Create boards, open shots, and keep your visual production flow
+                in one neutral workspace.
+              </p>
+            </div>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <Button
+                variant="tertiary"
+                onPress={handleCreateStoryboard}
+                isDisabled={isCreating}
+                className="rounded-full bg-neutral-50 px-6 py-2 text-sm font-semibold text-neutral-900 hover:bg-neutral-300"
+              >
+                {isCreating ? "Creating..." : "New Storyboard"}
+              </Button>
+            </div>
           </div>
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <Button
-              onPress={handleCreateStoryboard}
-              isDisabled={isCreating}
-              className="rounded-full px-6 py-2 text-sm font-semibold"
-              color="success"
-            >
-              {isCreating ? "Creating..." : "New Storyboard"}
-            </Button>
+          <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:max-w-md">
+            <div className="bg-neutral-600 px-4 py-3">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-200">
+                Total
+              </p>
+              <p className="mt-1 text-2xl font-semibold text-neutral-50">
+                {isStoryboardsLoading() ? "..." : storyboards.length}
+              </p>
+            </div>
+            <div className="bg-neutral-600 px-4 py-3">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-200">
+                Status
+              </p>
+              <p className="mt-1 text-sm font-medium text-neutral-50">
+                {isStoryboardsLoading() ? "Syncing" : "Ready"}
+              </p>
+            </div>
           </div>
-        </div>
-        <div className="pointer-events-none absolute -right-24 -top-24 h-56 w-56 rounded-full bg-emerald-200/40 blur-3xl" />
-        <div className="pointer-events-none absolute bottom-0 left-1/2 h-32 w-32 -translate-x-1/2 rounded-full bg-emerald-100/70 blur-2xl" />
-      </section>
+        </section>
 
-      <section className="flex flex-col gap-4">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 className="text-xl font-semibold text-slate-900">
+        <section className="bg-neutral-300 p-4 sm:p-5">
+          <div className="mb-4 flex flex-col gap-1">
+            <h2 className="text-xl font-semibold text-neutral-900">
               Your storyboards
             </h2>
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-neutral-700">
               {isStoryboardsLoading()
                 ? "Loading..."
                 : `${storyboards.length} total`}
             </p>
           </div>
-        </div>
-        {isStoryboardsLoading() ? (
-          <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-6 py-10 text-sm text-slate-500">
-            Loading storyboards...
-          </div>
-        ) : storyboards.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-6 py-10 text-sm text-slate-500">
-            No storyboards yet. Create your first one to get started.
-          </div>
-        ) : (
-          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {storyboards.map((storyboard) => (
-              <li
-                key={storyboard._id}
-                className="flex h-full flex-col justify-between rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
-              >
-                <div>
-                  <div className="text-base font-semibold text-slate-900">
-                    {storyboard.name}
+          {isStoryboardsLoading() ? (
+            <div className="bg-neutral-50 px-6 py-10 text-sm text-neutral-700">
+              Loading storyboards...
+            </div>
+          ) : storyboards.length === 0 ? (
+            <div className="bg-neutral-50 px-6 py-10 text-sm text-neutral-700">
+              No storyboards yet. Create your first one to get started.
+            </div>
+          ) : (
+            <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {storyboards.map((storyboard) => (
+                <li
+                  key={storyboard._id}
+                  className="flex h-full flex-col justify-between bg-neutral-50 p-5 transition"
+                >
+                  <div>
+                    <div className="text-base font-semibold text-neutral-900">
+                      {storyboard.name}
+                    </div>
+                    <p className="mt-2 text-sm text-neutral-700">
+                      {getStoryboardDescription(storyboard)}
+                    </p>
+                    <p className="mt-4 text-xs uppercase tracking-[0.14em] text-neutral-600">
+                      Updated {formatDateLabel(storyboard.updatedAt || storyboard.createdAt)}
+                    </p>
                   </div>
-                  <div className="mt-2 text-sm text-slate-500">
-                    {storyboard.description ||
-                      "Add a short description for this storyboard."}
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    <Button
+                      variant="tertiary"
+                      onPress={() => navigate(`/storyboard/${storyboard._id}`)}
+                      className="rounded-full bg-neutral-600 text-neutral-50"
+                    >
+                      Open
+                    </Button>
+                    <Button
+                      variant="tertiary"
+                      onPress={() => handleDeleteStoryboard(storyboard._id)}
+                      isDisabled={deletingId === storyboard._id}
+                      className="rounded-full bg-neutral-600 text-neutral-50"
+                    >
+                      {deletingId === storyboard._id ? "Deleting..." : "Delete"}
+                    </Button>
                   </div>
-                </div>
-                <div className="mt-6 flex flex-wrap gap-2">
-                  <Button
-                    variant="bordered"
-                    onPress={() => navigate(`/storyboard/${storyboard._id}`)}
-                    className="rounded-full"
-                  >
-                    Open
-                  </Button>
-                  <Button
-                    color="danger"
-                    variant="flat"
-                    onPress={() => handleDeleteStoryboard(storyboard._id)}
-                    isDisabled={deletingId === storyboard._id}
-                    className="rounded-full"
-                  >
-                    {deletingId === storyboard._id ? "Deleting..." : "Delete"}
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
     </div>
   );
 };

@@ -8,11 +8,21 @@ import {
 import { Meteor } from "meteor/meteor";
 import { useFind, useSubscribe } from "meteor/react-meteor-data";
 import { useParams } from "react-router";
-import { AlertDialog, Button } from "@heroui/react";
+import {
+  AlertDialog,
+  Button,
+  Dropdown,
+  Label,
+  Modal,
+} from "@heroui/react";
 import { StoryboardsCollection } from "../../api/storyboards.js";
 import { ShotsCollection } from "../../api/shots.js";
 import { AssetsCollection } from "../../api/assets.js";
 import { AssetCard } from "../components/AssetCard.jsx";
+import { FAL_TEXT_TO_IMAGE_MODELS } from "../../configs/models/fal/text-to-image.js";
+import { FAL_IMAGE_EDIT_MODELS } from "../../configs/models/fal/image-edit.js";
+import { FAL_VIDEO_MODELS } from "../../configs/models/fal/video.js";
+import { FAL_SPEECH_MODELS } from "../../configs/models/fal/speech.js";
 
 const ROWS = [
   {
@@ -55,15 +65,90 @@ const ACTIVE_FIELD_BY_ROW = {
   audio: "activeSourceAudioId",
 };
 
+const MODEL_PICKER_COLUMNS = [
+  {
+    id: "textToImage",
+    label: "text to image",
+    options: Object.values(FAL_TEXT_TO_IMAGE_MODELS),
+    defaultModel: FAL_TEXT_TO_IMAGE_MODELS.default?.key,
+  },
+  {
+    id: "imageEdit",
+    label: "image edit",
+    options: Object.values(FAL_IMAGE_EDIT_MODELS),
+    defaultModel: FAL_IMAGE_EDIT_MODELS.default?.key,
+  },
+  {
+    id: "textToVideo",
+    label: "text to video",
+    options: Object.values(FAL_VIDEO_MODELS).filter(
+      (model) => model.task === "text_to_video"
+    ),
+    defaultModel: FAL_VIDEO_MODELS.textToVideo?.key,
+  },
+  {
+    id: "imageToVideo",
+    label: "image to video",
+    options: Object.values(FAL_VIDEO_MODELS).filter(
+      (model) => model.task === "image_to_video"
+    ),
+    defaultModel: FAL_VIDEO_MODELS.imageToVideo?.key,
+  },
+  {
+    id: "speech",
+    label: "speech",
+    options: Object.values(FAL_SPEECH_MODELS),
+    defaultModel: FAL_SPEECH_MODELS.default?.key,
+  },
+];
+
+const getModelLabel = (model) => {
+  if (!model?.modelId) return model?.key || "model";
+  const parts = model.modelId.split("/");
+  return parts.slice(-2).join("/");
+};
+
+const getAudioDurationInSeconds = (file) =>
+  new Promise((resolve) => {
+    const audio = document.createElement("audio");
+    const objectUrl = URL.createObjectURL(file);
+
+    const cleanup = () => {
+      URL.revokeObjectURL(objectUrl);
+      audio.removeAttribute("src");
+      audio.load();
+    };
+
+    const handleLoaded = () => {
+      const duration = Number(audio.duration);
+      cleanup();
+      if (!Number.isFinite(duration) || duration <= 0) {
+        resolve(null);
+        return;
+      }
+      resolve(Math.round(duration));
+    };
+
+    const handleError = () => {
+      cleanup();
+      resolve(null);
+    };
+
+    audio.preload = "metadata";
+    audio.addEventListener("loadedmetadata", handleLoaded, { once: true });
+    audio.addEventListener("error", handleError, { once: true });
+    audio.src = objectUrl;
+  });
+
 const ShotColumn = ({
   shot,
   children,
-  isMenuOpen,
-  onToggleMenu,
   onRename,
   onDelete,
 }) => {
   const renameInputRef = useRef(null);
+  const renameTriggerRef = useRef(null);
+  const deleteTriggerRef = useRef(null);
   const {
     attributes,
     listeners,
@@ -86,135 +171,141 @@ const ShotColumn = ({
   return (
     <div
       ref={setDropRef}
-      className={`flex min-w-[240px] flex-col rounded-3xl border bg-white shadow-sm ${
-        isOver ? "border-emerald-300" : "border-slate-200"
+      className={`flex w-[260px] min-w-[260px] shrink-0 flex-col bg-neutral-50 ${
+        isOver ? "bg-neutral-300" : "bg-neutral-50"
       }`}
     >
       <div
         ref={setNodeRef}
         style={style}
-        className={`relative flex flex-col gap-1 rounded-t-3xl border-b border-slate-200 bg-emerald-50 px-4 py-3 ${
+        className={`relative flex flex-col gap-1 bg-neutral-600 px-4 py-3 text-neutral-50 ${
           isDragging ? "opacity-70" : ""
         }`}
       >
-        <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center justify-between gap-2">
           <div
             ref={setActivatorNodeRef}
             className="flex cursor-grab flex-col"
             {...listeners}
             {...attributes}
           >
-            <span className="text-sm font-semibold text-slate-900">
+            <span className="text-sm font-semibold text-neutral-50">
               {shot.name || "Shot"}
             </span>
-            <div className="text-[10px] font-semibold uppercase tracking-[0.25em] text-emerald-600">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.25em] text-neutral-200">
               Drag to reorder
             </div>
           </div>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggleMenu(shot._id);
-            }}
-            className="flex h-8 w-8 items-center justify-center rounded-full border border-emerald-100 bg-white/80 text-emerald-600 shadow-sm transition hover:border-emerald-300"
-            aria-label="Shot menu"
-          >
-            <span className="text-lg leading-none">⋯</span>
-          </button>
+          <Dropdown>
+            <Button
+              isIconOnly
+              variant="tertiary"
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-neutral-50 text-neutral-900 transition hover:bg-neutral-300"
+              aria-label="Shot menu"
+              onPress={(event) => event?.stopPropagation?.()}
+            >
+              <span className="text-lg leading-none">⋯</span>
+            </Button>
+            <Dropdown.Popover>
+              <Dropdown.Menu
+                onAction={(key) => {
+                  if (key === "rename") renameTriggerRef.current?.click();
+                  if (key === "delete") deleteTriggerRef.current?.click();
+                }}
+              >
+                <Dropdown.Item id="rename" textValue="Rename">
+                  <Label>Rename</Label>
+                </Dropdown.Item>
+                <Dropdown.Item id="delete" textValue="Delete">
+                  <Label>Delete</Label>
+                </Dropdown.Item>
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
         </div>
-        {isMenuOpen ? (
-          <div
-            className="absolute right-3 top-12 z-20 w-32 rounded-2xl border border-slate-200 bg-white p-2 text-xs shadow-xl"
-            onClick={(event) => event.stopPropagation()}
-            onMouseLeave={() => onToggleMenu(null)}
-          >
-            <AlertDialog>
-              <AlertDialog.Trigger className="w-full rounded-xl px-3 py-2 text-left text-slate-700 transition hover:bg-emerald-50">
-                Rename
-              </AlertDialog.Trigger>
-              <AlertDialog.Backdrop>
-                <AlertDialog.Container>
-                  <AlertDialog.Dialog className="sm:max-w-[420px]">
-                    <AlertDialog.CloseTrigger />
-                    <AlertDialog.Header>
-                      <AlertDialog.Icon status="accent" />
-                      <AlertDialog.Heading>
-                        Rename this shot
-                      </AlertDialog.Heading>
-                    </AlertDialog.Header>
-                    <AlertDialog.Body>
-                      <div className="grid gap-2">
-                        <label className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
-                          Shot name
-                        </label>
-                        <input
-                          defaultValue={shot.name || "Shot"}
-                          className="w-full rounded-2xl border border-slate-200 px-4 py-2 text-sm text-slate-700 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-200"
-                          type="text"
-                          name="shot-name"
-                          ref={renameInputRef}
-                        />
-                      </div>
-                    </AlertDialog.Body>
-                    <AlertDialog.Footer>
-                      <Button slot="close" variant="tertiary">
-                        Cancel
-                      </Button>
-                      <Button
-                        slot="close"
-                        onPress={(event) => {
-                          const nextName = renameInputRef.current?.value?.trim();
-                          if (nextName) {
-                            onRename(shot, nextName);
-                          }
-                        }}
-                      >
-                        Save
-                      </Button>
-                    </AlertDialog.Footer>
-                  </AlertDialog.Dialog>
-                </AlertDialog.Container>
-              </AlertDialog.Backdrop>
-            </AlertDialog>
-            <AlertDialog>
-              <AlertDialog.Trigger className="w-full rounded-xl px-3 py-2 text-left text-rose-600 transition hover:bg-rose-50">
-                Delete
-              </AlertDialog.Trigger>
-              <AlertDialog.Backdrop>
-                <AlertDialog.Container>
-                  <AlertDialog.Dialog className="sm:max-w-[420px]">
-                    <AlertDialog.CloseTrigger />
-                    <AlertDialog.Header>
-                      <AlertDialog.Icon status="danger" />
-                      <AlertDialog.Heading>
-                        Delete this shot?
-                      </AlertDialog.Heading>
-                    </AlertDialog.Header>
-                    <AlertDialog.Body>
-                      <p className="text-sm text-slate-600">
-                        This will permanently remove the shot and its assets.
-                      </p>
-                    </AlertDialog.Body>
-                    <AlertDialog.Footer>
-                      <Button slot="close" variant="tertiary">
-                        Cancel
-                      </Button>
-                      <Button
-                        slot="close"
-                        variant="danger"
-                        onPress={() => onDelete(shot)}
-                      >
-                        Delete
-                      </Button>
-                    </AlertDialog.Footer>
-                  </AlertDialog.Dialog>
-                </AlertDialog.Container>
-              </AlertDialog.Backdrop>
-            </AlertDialog>
-          </div>
-        ) : null}
       </div>
+      <Modal>
+        <Modal.Trigger>
+          <button ref={renameTriggerRef} type="button" className="hidden">
+            Rename
+          </button>
+        </Modal.Trigger>
+        <Modal.Backdrop>
+          <Modal.Container>
+            <Modal.Dialog className="sm:max-w-[420px]">
+              <Modal.CloseTrigger />
+              <Modal.Header>
+                <Modal.Heading>
+                  Rename this shot
+                </Modal.Heading>
+              </Modal.Header>
+              <Modal.Body>
+                <div className="grid gap-2">
+                  <label className="text-xs font-semibold uppercase tracking-[0.2em] text-neutral-500">
+                    Shot name
+                  </label>
+                  <input
+                    defaultValue={shot.name || "Shot"}
+                    className="w-full bg-neutral-300 px-4 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-600"
+                    type="text"
+                    name="shot-name"
+                    ref={renameInputRef}
+                  />
+                </div>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button slot="close" variant="tertiary">
+                  Cancel
+                </Button>
+                <Button
+                  slot="close"
+                  variant="tertiary"
+                  onPress={() => {
+                    const nextName = renameInputRef.current?.value?.trim();
+                    if (nextName) {
+                      onRename(shot, nextName);
+                    }
+                  }}
+                >
+                  Save
+                </Button>
+              </Modal.Footer>
+            </Modal.Dialog>
+          </Modal.Container>
+        </Modal.Backdrop>
+      </Modal>
+      <Modal>
+        <Modal.Trigger>
+          <button ref={deleteTriggerRef} type="button" className="hidden">
+            Delete
+          </button>
+        </Modal.Trigger>
+        <Modal.Backdrop>
+          <Modal.Container>
+            <Modal.Dialog className="sm:max-w-[420px]">
+              <Modal.CloseTrigger />
+              <Modal.Header>
+                <Modal.Heading>
+                  Delete this shot?
+                </Modal.Heading>
+              </Modal.Header>
+              <Modal.Body>
+                <p className="text-sm text-neutral-600">
+                  This will permanently remove the shot and its assets.
+                </p>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button slot="close" variant="tertiary">
+                  Cancel
+                </Button>
+                <Button slot="close" variant="tertiary" onPress={() => onDelete(shot)}>
+                  Delete
+                </Button>
+              </Modal.Footer>
+            </Modal.Dialog>
+          </Modal.Container>
+        </Modal.Backdrop>
+      </Modal>
       {children}
     </div>
   );
@@ -256,11 +347,11 @@ const StoryboardPropsForm = ({ storyboard, onClose }) => {
   return (
     <form className="grid gap-4" onSubmit={handleSubmit}>
       <div className="grid gap-2">
-        <label className="text-[11px] font-semibold uppercase tracking-[0.3em] text-slate-500">
+        <label className="text-[11px] font-semibold uppercase tracking-[0.3em] text-neutral-500">
           Name
         </label>
         <input
-          className="rounded-2xl border border-slate-200 px-4 py-2 text-sm text-slate-700 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-200"
+          className="bg-neutral-300 px-4 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-600"
           type="text"
           value={name}
           onChange={(event) => setName(event.target.value)}
@@ -268,22 +359,22 @@ const StoryboardPropsForm = ({ storyboard, onClose }) => {
         />
       </div>
       <div className="grid gap-2">
-        <label className="text-[11px] font-semibold uppercase tracking-[0.3em] text-slate-500">
+        <label className="text-[11px] font-semibold uppercase tracking-[0.3em] text-neutral-500">
           Description
         </label>
         <textarea
-          className="min-h-[120px] rounded-2xl border border-slate-200 px-4 py-2 text-sm text-slate-700 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-200"
+          className="min-h-[120px] bg-neutral-300 px-4 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-600"
           value={description}
           onChange={(event) => setDescription(event.target.value)}
           placeholder="Describe the storyboard content..."
         />
       </div>
       <div className="grid gap-2">
-        <label className="text-[11px] font-semibold uppercase tracking-[0.3em] text-slate-500">
+        <label className="text-[11px] font-semibold uppercase tracking-[0.3em] text-neutral-500">
           Aspect Ratio
         </label>
         <select
-          className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-200"
+          className="bg-neutral-300 px-4 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-600"
           value={aspectRatio}
           onChange={(event) => setAspectRatio(event.target.value)}
         >
@@ -294,17 +385,17 @@ const StoryboardPropsForm = ({ storyboard, onClose }) => {
       <div className="flex justify-end gap-3">
         <Button
           type="button"
-          variant="bordered"
+          variant="tertiary"
           onPress={onClose}
           className="rounded-full px-5"
         >
           Cancel
         </Button>
         <Button
+          variant="tertiary"
           type="submit"
           isDisabled={isSaving}
-          className="rounded-full px-5"
-          color="success"
+          className="rounded-full bg-neutral-900 px-5 text-neutral-50 hover:bg-neutral-600"
         >
           {isSaving ? "Saving..." : "Save"}
         </Button>
@@ -330,7 +421,6 @@ export const StoryboardInitPage = () => {
   const [orderedIds, setOrderedIds] = useState(null);
   const [activeShotId, setActiveShotId] = useState(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [openMenuShotId, setOpenMenuShotId] = useState(null);
   const [historyTarget, setHistoryTarget] = useState(null);
   const [historySelectedId, setHistorySelectedId] = useState(null);
   const historyVideoRef = useRef(null);
@@ -342,6 +432,25 @@ export const StoryboardInitPage = () => {
   const activeStoryboard = storyboards.find(
     (storyboard) => storyboard._id === storyboardId
   );
+  const modelSelections = activeStoryboard?.modelSelections || {};
+
+  const getSelectedModel = (columnId) => {
+    const column = MODEL_PICKER_COLUMNS.find((item) => item.id === columnId);
+    if (!column) return null;
+    return modelSelections[columnId] || column.defaultModel || null;
+  };
+
+  const handleModelSelectionChange = async (columnId, value) => {
+    if (!storyboardId) return;
+    const next = {
+      ...modelSelections,
+      [columnId]: value,
+    };
+    await Meteor.callAsync("storyboards.update", {
+      storyboardId,
+      modelSelections: next,
+    });
+  };
 
   const assetsById = useMemo(() => {
     return new Map(assets.map((asset) => [asset._id, asset]));
@@ -478,6 +587,7 @@ export const StoryboardInitPage = () => {
         storyboardId,
         shotId,
         rowId,
+        model: getSelectedModel("speech"),
         ...updates,
       });
       return;
@@ -488,6 +598,7 @@ export const StoryboardInitPage = () => {
         shotId,
         rowId,
         prompt: updates.prompt,
+        model: getSelectedModel("textToVideo"),
       });
       return;
     }
@@ -497,6 +608,7 @@ export const StoryboardInitPage = () => {
         shotId,
         rowId,
         sourceRowId: "source-image",
+        model: getSelectedModel("imageEdit"),
         ...updates,
       });
       return;
@@ -505,6 +617,7 @@ export const StoryboardInitPage = () => {
       storyboardId,
       shotId,
       rowId,
+      model: getSelectedModel("textToImage"),
       ...updates,
     });
   };
@@ -517,30 +630,43 @@ export const StoryboardInitPage = () => {
       shotId,
       rowId,
       prompt: updates.prompt,
+      model: getSelectedModel("imageToVideo"),
+    });
+  };
+
+  const handleGenerateCurrentAsset = async (shotId, rowId, updates) => {
+    if (!storyboardId) return;
+    if (rowId !== "edit-image") return;
+    await Meteor.callAsync("assets.editFromActive", {
+      storyboardId,
+      shotId,
+      rowId,
+      sourceRowId: "edit-image",
+      model: getSelectedModel("imageEdit"),
+      ...updates,
     });
   };
 
   const handleUploadAsset = async (shotId, rowId, file) => {
     if (!storyboardId || !file) return;
+    const durationSeconds =
+      rowId === "audio" ? await getAudioDurationInSeconds(file) : null;
     const response = await fetch("/api/assets/upload", {
       method: "POST",
       headers: {
         "x-storyboard-id": storyboardId,
         "x-shot-id": shotId,
         "x-row-id": rowId,
+        ...(durationSeconds
+          ? { "x-duration-seconds": String(durationSeconds) }
+          : {}),
         "Content-Type": file.type || "application/octet-stream",
       },
       body: file,
     });
     if (response.ok) {
       const data = await response.json();
-      if (data?.assetId) {
-        await Meteor.callAsync("assets.setActive", {
-          shotId,
-          rowId,
-          assetId: data.assetId,
-        });
-      }
+      if (!data?.assetId) return;
     }
   };
 
@@ -601,37 +727,25 @@ export const StoryboardInitPage = () => {
   };
 
   const handleRenameShot = async (shot, nextName) => {
-    if (!nextName || nextName.trim() === shot.name) {
-      setOpenMenuShotId(null);
-      return;
-    }
+    if (!nextName || nextName.trim() === shot.name) return;
     await Meteor.callAsync("shots.update", {
       shotId: shot._id,
       name: nextName.trim(),
     });
-    setOpenMenuShotId(null);
   };
 
   const handleDeleteShot = async (shot) => {
     await Meteor.callAsync("shots.remove", { shotId: shot._id });
-    setOpenMenuShotId(null);
   };
 
   return (
-    <div className="flex w-full flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-      <header className="flex flex-col gap-4 border-b border-slate-200 pb-6">
+    <div className="flex w-full flex-col gap-6 bg-neutral-50 px-4 py-6 sm:px-6 lg:px-8">
+      <header className="flex flex-col gap-4 bg-neutral-900 px-4 py-4 sm:px-5 sm:py-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-emerald-600">
-              Storyboard
-            </p>
-            <h1 className="mt-3 text-3xl font-semibold text-slate-900">
+            <h1 className="text-3xl font-semibold text-neutral-50">
               {activeStoryboard?.name || "Storyboard"}
             </h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-500">
-              {activeStoryboard?.description ||
-                "Draft the structure before attaching real assets."}
-            </p>
           </div>
         <div className="flex items-center gap-3">
             <input
@@ -666,9 +780,9 @@ export const StoryboardInitPage = () => {
             >
               Import Source Image
             </Button>
-            <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-600">
+            <div className="flex items-center gap-2 rounded-full bg-neutral-600 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-neutral-50">
               <span>Ratio</span>
-              <div className="flex overflow-hidden rounded-full border border-slate-200 bg-slate-50">
+              <div className="flex overflow-hidden rounded-full bg-neutral-50">
                 {["16:9", "9:16"].map((ratio) => (
                   <button
                     key={ratio}
@@ -681,8 +795,8 @@ export const StoryboardInitPage = () => {
                     }
                     className={`px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] transition ${
                       (activeStoryboard?.aspectRatio || "16:9") === ratio
-                        ? "bg-emerald-600 text-white"
-                        : "text-slate-600 hover:bg-white"
+                        ? "bg-neutral-900 text-neutral-50"
+                        : "text-neutral-700 hover:bg-neutral-300"
                     }`}
                   >
                     {ratio}
@@ -691,16 +805,16 @@ export const StoryboardInitPage = () => {
               </div>
             </div>
             <Button
+              variant="tertiary"
               onPress={handleAddShot}
-              className="rounded-full px-5"
-              color="success"
+              className="rounded-full bg-neutral-50 px-5 text-neutral-900 hover:bg-neutral-300"
             >
               Add Shot
             </Button>
             <button
               type="button"
               onClick={() => setIsSettingsOpen(true)}
-              className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-emerald-300 hover:text-emerald-600"
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-600 text-neutral-50 transition hover:bg-neutral-300 hover:text-neutral-900"
               aria-label="Storyboard settings"
             >
               <svg
@@ -723,7 +837,7 @@ export const StoryboardInitPage = () => {
               </svg>
             </button>
             <AlertDialog>
-              <AlertDialog.Trigger className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-rose-600 shadow-sm transition hover:border-rose-200">
+              <AlertDialog.Trigger className="flex items-center gap-2 rounded-full bg-neutral-600 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-neutral-50 transition hover:bg-neutral-300 hover:text-neutral-900">
                 Clear Shots
               </AlertDialog.Trigger>
               <AlertDialog.Backdrop>
@@ -731,18 +845,18 @@ export const StoryboardInitPage = () => {
                   <AlertDialog.Dialog className="sm:max-w-[420px]">
                     <AlertDialog.CloseTrigger />
                     <AlertDialog.Header>
-                      <AlertDialog.Icon status="danger" />
+                      <AlertDialog.Icon status="accent" />
                       <AlertDialog.Heading>
                         Clear all shots?
                       </AlertDialog.Heading>
                     </AlertDialog.Header>
                     <AlertDialog.Body>
-                      <p className="text-sm text-slate-600">
+                      <p className="text-sm text-neutral-600">
                         This will permanently delete all shots and assets in this storyboard.
                         Type the storyboard name to confirm.
                       </p>
                       <input
-                        className="mt-4 w-full rounded-2xl border border-slate-200 px-4 py-2 text-sm text-slate-700 outline-none focus:border-rose-400 focus:ring-2 focus:ring-rose-200"
+                        className="mt-4 w-full bg-neutral-300 px-4 py-2 text-sm text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-600"
                         placeholder={activeStoryboard?.name || "Storyboard name"}
                         value={clearConfirmValue}
                         onChange={(event) => setClearConfirmValue(event.target.value)}
@@ -754,7 +868,7 @@ export const StoryboardInitPage = () => {
                       </Button>
                       <Button
                         slot="close"
-                        variant="danger"
+                        variant="tertiary"
                         isDisabled={
                           clearConfirmValue.trim() !== (activeStoryboard?.name || "")
                         }
@@ -776,20 +890,55 @@ export const StoryboardInitPage = () => {
         </div>
       </header>
 
+      {activeStoryboard ? (
+        <section className="bg-neutral-200 p-2">
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+            {MODEL_PICKER_COLUMNS.map((column) => (
+              <div key={column.id} className="bg-neutral-50 p-2">
+                <label className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-600">
+                  {column.label}
+                </label>
+                <select
+                  className="w-full bg-neutral-200 px-2 py-2 text-xs text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-600"
+                  value={getSelectedModel(column.id) || ""}
+                  onChange={(event) =>
+                    handleModelSelectionChange(column.id, event.target.value)
+                  }
+                >
+                  {column.options.map((model) => (
+                    <option key={model.key} value={model.key}>
+                      {getModelLabel(model)}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-2 truncate text-[10px] text-neutral-500">
+                  {
+                    (column.options.find(
+                      (option) =>
+                        option.key === (getSelectedModel(column.id) || "")
+                    ) || column.options[0])?.modelId
+                  }
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {isStoryboardsLoading() || isShotsLoading() || isAssetsLoading() ? (
-        <div className="rounded-3xl border border-dashed border-slate-200 bg-white px-6 py-10 text-sm text-slate-500">
+        <div className="bg-neutral-300 px-6 py-10 text-sm text-neutral-700">
           Loading storyboard...
         </div>
       ) : !activeStoryboard ? (
-        <div className="rounded-3xl border border-dashed border-slate-200 bg-white px-6 py-10 text-sm text-slate-500">
+        <div className="bg-neutral-300 px-6 py-10 text-sm text-neutral-700">
           Storyboard not found.
         </div>
       ) : (
-        <>
+        <div className="bg-neutral-300 p-2">
           <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-            <div className="flex gap-4 overflow-x-auto pb-4">
+            <div className="flex gap-2 overflow-x-auto pb-2">
               {displayShots.length === 0 ? (
-                <div className="min-w-[240px] rounded-3xl border border-dashed border-slate-200 bg-white px-6 py-10 text-sm text-slate-500">
+                <div className="w-[260px] min-w-[260px] bg-neutral-50 px-6 py-10 text-sm text-neutral-700">
                   No shots yet. Add one to start.
                 </div>
               ) : (
@@ -797,12 +946,10 @@ export const StoryboardInitPage = () => {
                   <ShotColumn
                     key={shot._id}
                     shot={shot}
-                    isMenuOpen={openMenuShotId === shot._id}
-                    onToggleMenu={(id) => setOpenMenuShotId(id)}
                     onRename={handleRenameShot}
                     onDelete={handleDeleteShot}
                   >
-                    <div className="flex flex-col gap-3 p-4">
+                    <div className="flex flex-col gap-2 p-2">
                       {ROWS.map((row) => {
                         const asset = getActiveAsset(shot, row.id);
                         const historyKey = `${shot._id}:${row.id}`;
@@ -828,6 +975,10 @@ export const StoryboardInitPage = () => {
                               handleGenerateReferenceAsset(shot._id, row.id, updates)
                             }
                             hasReference={Boolean(referenceAsset)}
+                            onGenerateCurrent={(updates) =>
+                              handleGenerateCurrentAsset(shot._id, row.id, updates)
+                            }
+                            hasCurrent={Boolean(asset?._id)}
                             onOpenHistory={() =>
                               setHistoryTarget({
                                 shotId: shot._id,
@@ -847,17 +998,17 @@ export const StoryboardInitPage = () => {
             </div>
             <DragOverlay>
               {activeShotId ? (
-                <div className="min-w-[240px] rounded-3xl border-2 border-dashed border-emerald-300 bg-white/90 shadow-xl">
-                  <div className="rounded-t-3xl border-b border-slate-200 bg-emerald-50 px-4 py-3">
-                    <div className="text-sm font-semibold text-slate-900">
+                <div className="w-[260px] min-w-[260px] bg-neutral-50">
+                  <div className="bg-neutral-600 px-4 py-3">
+                    <div className="text-sm font-semibold text-neutral-50">
                       {displayShots.find((shot) => shot._id === activeShotId)
                         ?.name || "Shot"}
                     </div>
-                    <div className="text-[10px] font-semibold uppercase tracking-[0.25em] text-emerald-600">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.25em] text-neutral-200">
                       Moving
                     </div>
                   </div>
-                  <div className="flex flex-col gap-3 p-4">
+                  <div className="flex flex-col gap-2 p-2">
                     {ROWS.map((row) => (
                       <AssetCard
                         key={row.id}
@@ -871,29 +1022,29 @@ export const StoryboardInitPage = () => {
               ) : null}
             </DragOverlay>
           </DndContext>
-        </>
+        </div>
       )}
 
       {isSettingsOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
           <div
-            className="absolute inset-0 bg-slate-900/40"
+            className="absolute inset-0 bg-neutral-900/40"
             onClick={() => setIsSettingsOpen(false)}
           />
-          <div className="relative w-full max-w-lg rounded-3xl border border-slate-200 bg-white p-6 shadow-xl">
+          <div className="relative w-full max-w-lg rounded-3xl bg-neutral-50 p-6">
             <div className="mb-5 flex items-start justify-between">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.3em] text-emerald-600">
+                <p className="text-xs font-semibold uppercase tracking-[0.3em] text-neutral-600">
                   Settings
                 </p>
-                <h2 className="mt-2 text-xl font-semibold text-slate-900">
+                <h2 className="mt-2 text-xl font-semibold text-neutral-900">
                   Storyboard settings
                 </h2>
               </div>
               <button
                 type="button"
                 onClick={() => setIsSettingsOpen(false)}
-                className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500"
+                className="rounded-full bg-neutral-200 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-neutral-500"
               >
                 Close
               </button>
@@ -909,21 +1060,21 @@ export const StoryboardInitPage = () => {
       {historyTarget ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
           <div
-            className="absolute inset-0 bg-slate-900/40"
+            className="absolute inset-0 bg-neutral-900/40"
             onClick={() => setHistoryTarget(null)}
           />
-          <div className="relative w-full max-w-4xl rounded-3xl border border-slate-200 bg-white p-6 shadow-xl">
+          <div className="relative w-full max-w-4xl rounded-3xl bg-neutral-50 p-6">
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.3em] text-emerald-600">
+                <p className="text-xs font-semibold uppercase tracking-[0.3em] text-neutral-600">
                   History
                 </p>
-                <h2 className="mt-2 text-xl font-semibold text-slate-900">
+                <h2 className="mt-2 text-xl font-semibold text-neutral-900">
                   Asset history
                 </h2>
-                <p className="mt-2 text-sm text-slate-500">
+                <p className="mt-2 text-sm text-neutral-500">
                   Current prompt:{" "}
-                  <span className="font-semibold text-slate-700">
+                  <span className="font-semibold text-neutral-700">
                     {(() => {
                       const shot = shots.find(
                         (item) => item._id === historyTarget.shotId
@@ -941,14 +1092,14 @@ export const StoryboardInitPage = () => {
               <button
                 type="button"
                 onClick={() => setHistoryTarget(null)}
-                className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500"
+                className="rounded-full bg-neutral-200 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-neutral-500"
               >
                 Close
               </button>
             </div>
             {historyTarget.rowId === "audio" ? (
               <div className="flex flex-col gap-4">
-                <div className="overflow-hidden rounded-2xl border border-slate-200 bg-emerald-50 px-4 py-4">
+                <div className="overflow-hidden rounded-2xl bg-neutral-100 px-4 py-4">
                   {historySelectedId ? (
                     <audio controls className="w-full">
                       <source
@@ -956,7 +1107,7 @@ export const StoryboardInitPage = () => {
                       />
                     </audio>
                   ) : (
-                    <div className="flex h-16 items-center justify-center text-sm text-slate-400">
+                    <div className="flex h-16 items-center justify-center text-sm text-neutral-400">
                       No audio selected
                     </div>
                   )}
@@ -968,10 +1119,10 @@ export const StoryboardInitPage = () => {
                     <button
                       key={asset._id}
                       type="button"
-                      className={`group overflow-hidden rounded-2xl border bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md ${
+                      className={`group overflow-hidden rounded-2xl bg-neutral-100 text-left transition ${
                         historySelectedId === asset._id
-                          ? "border-emerald-400"
-                          : "border-slate-200"
+                          ? "ring-1 ring-neutral-400"
+                          : ""
                       }`}
                       onClick={() => {
                         setHistorySelectedId(asset._id);
@@ -989,15 +1140,15 @@ export const StoryboardInitPage = () => {
                           className="h-24 w-full object-cover"
                         />
                       ) : (
-                        <div className="flex h-24 items-center justify-center text-sm text-slate-400">
+                        <div className="flex h-24 items-center justify-center text-sm text-neutral-400">
                           No waveform
                         </div>
                       )}
-                      <div className="grid gap-2 px-3 py-3 text-xs text-slate-600">
-                        <div className="font-semibold text-slate-900">
+                      <div className="grid gap-2 px-3 py-3 text-xs text-neutral-600">
+                        <div className="font-semibold text-neutral-900">
                           {asset.prompt || "No prompt"}
                         </div>
-                        <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-600 opacity-0 transition group-hover:opacity-100">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-600 opacity-0 transition group-hover:opacity-100">
                           Set active
                         </div>
                       </div>
@@ -1008,7 +1159,7 @@ export const StoryboardInitPage = () => {
             ) : historyTarget.rowId === "source-clip" ||
               historyTarget.rowId === "output-video" ? (
               <div className="flex flex-col gap-4">
-                <div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-900">
+                <div className="overflow-hidden rounded-2xl bg-neutral-900">
                   {historySelectedId ? (
                     <video
                       ref={historyVideoRef}
@@ -1021,18 +1172,18 @@ export const StoryboardInitPage = () => {
                       className="h-64 w-full object-contain"
                     />
                   ) : (
-                    <div className="flex h-64 items-center justify-center text-sm text-slate-400">
+                    <div className="flex h-64 items-center justify-center text-sm text-neutral-400">
                       No video selected
                     </div>
                   )}
                 </div>
                 <div className="flex items-center justify-between">
-                  <p className="text-sm text-slate-500">
+                  <p className="text-sm text-neutral-500">
                     Select a clip below to activate it or capture a frame.
                   </p>
                   <Button
-                    className="rounded-full px-5"
-                    color="success"
+                    variant="tertiary"
+                    className="rounded-full bg-neutral-900 px-5 text-white hover:bg-neutral-800"
                     onPress={handleCaptureFrame}
                   >
                     Capture current frame → source image
@@ -1045,10 +1196,10 @@ export const StoryboardInitPage = () => {
                     <button
                       key={asset._id}
                       type="button"
-                      className={`group overflow-hidden rounded-2xl border bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md ${
+                      className={`group overflow-hidden rounded-2xl bg-neutral-100 text-left transition ${
                         historySelectedId === asset._id
-                          ? "border-emerald-400"
-                          : "border-slate-200"
+                          ? "ring-1 ring-neutral-400"
+                          : ""
                       }`}
                       onClick={() => {
                         setHistorySelectedId(asset._id);
@@ -1066,15 +1217,15 @@ export const StoryboardInitPage = () => {
                           className="h-32 w-full object-cover"
                         />
                       ) : (
-                        <div className="flex h-32 items-center justify-center text-sm text-slate-400">
+                        <div className="flex h-32 items-center justify-center text-sm text-neutral-400">
                           No thumbnail
                         </div>
                       )}
-                      <div className="grid gap-2 px-3 py-3 text-xs text-slate-600">
-                        <div className="font-semibold text-slate-900">
+                      <div className="grid gap-2 px-3 py-3 text-xs text-neutral-600">
+                        <div className="font-semibold text-neutral-900">
                           {asset.prompt || "No prompt"}
                         </div>
-                        <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-600 opacity-0 transition group-hover:opacity-100">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-600 opacity-0 transition group-hover:opacity-100">
                           Set active
                         </div>
                       </div>
@@ -1089,7 +1240,7 @@ export const StoryboardInitPage = () => {
                 ) || []).map((asset) => (
                   <div
                     key={asset._id}
-                    className="group cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md"
+                    className="group cursor-pointer overflow-hidden rounded-2xl bg-neutral-100 transition"
                     onClick={() =>
                       handleSetActiveAsset(
                         historyTarget.shotId,
@@ -1105,20 +1256,20 @@ export const StoryboardInitPage = () => {
                         className="h-40 w-full object-cover"
                       />
                     ) : (
-                      <div className="flex h-40 items-center justify-center text-sm text-slate-400">
+                      <div className="flex h-40 items-center justify-center text-sm text-neutral-400">
                         No preview
                       </div>
                     )}
-                    <div className="grid gap-2 px-3 py-3 text-xs text-slate-600">
-                      <div className="font-semibold text-slate-900">
+                    <div className="grid gap-2 px-3 py-3 text-xs text-neutral-600">
+                      <div className="font-semibold text-neutral-900">
                         {asset.prompt || "No prompt"}
                       </div>
-                      <div className="text-slate-500">
+                      <div className="text-neutral-500">
                         {asset.meta?.width && asset.meta?.height
                           ? `${asset.meta.width}×${asset.meta.height}`
                           : "Unknown size"}
                       </div>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-600 opacity-0 transition group-hover:opacity-100">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-600 opacity-0 transition group-hover:opacity-100">
                         Set active
                       </div>
                     </div>

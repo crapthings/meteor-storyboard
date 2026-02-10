@@ -2,6 +2,10 @@ import { Meteor } from 'meteor/meteor'
 import { StoryboardsCollection } from '/imports/api/storyboards'
 import { ShotsCollection } from '/imports/api/shots'
 
+const isObject = (value) => (
+  value && typeof value === 'object' && !Array.isArray(value)
+)
+
 Meteor.methods({
   async 'storyboards.create' ({ name, description, aspectRatio }) {
     const safeName = (name || 'Untitled Storyboard').trim()
@@ -24,7 +28,7 @@ Meteor.methods({
 
     return storyboardId
   },
-  async 'storyboards.update' ({ storyboardId, name, description, order, aspectRatio }) {
+  async 'storyboards.update' ({ storyboardId, name, description, order, aspectRatio, modelSelections }) {
     if (!storyboardId) {
       throw new Meteor.Error('storyboards.update.invalid', 'Invalid payload.')
     }
@@ -41,6 +45,9 @@ Meteor.methods({
     }
     if (typeof order === 'number') {
       updates.order = order
+    }
+    if (isObject(modelSelections)) {
+      updates.modelSelections = modelSelections
     }
     updates.updatedAt = new Date()
 

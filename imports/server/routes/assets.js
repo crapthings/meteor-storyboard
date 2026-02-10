@@ -1,5 +1,4 @@
 import { WebApp } from 'meteor/webapp'
-import { Random } from 'meteor/random'
 import { Meteor } from 'meteor/meteor'
 import { nanoid } from 'nanoid'
 import fs from 'node:fs/promises'
@@ -23,6 +22,14 @@ const ALLOWED_TYPES = new Set([
   'video/webm'
 ])
 
+const ALLOWED_TYPE_PREFIX_BY_ROW = {
+  'source-clip': 'video/',
+  'source-image': 'image/',
+  'edit-image': 'image/',
+  'output-video': 'video/',
+  audio: 'audio/'
+}
+
 const json = (res, status, payload) => {
   res.writeHead(status, {
     'Content-Type': 'application/json',
@@ -31,12 +38,69 @@ const json = (res, status, payload) => {
   res.end(JSON.stringify(payload))
 }
 
+const getAllowedTypePrefixForRow = (rowId) => ALLOWED_TYPE_PREFIX_BY_ROW[rowId]
+
+const isTypeAllowedForRow = (rowId, type) => {
+  const allowedPrefix = getAllowedTypePrefixForRow(rowId)
+  if (!allowedPrefix || typeof type !== 'string') return false
+  return type.startsWith(allowedPrefix)
+}
+
+const parseDurationSeconds = (value) => {
+  if (typeof value !== 'string') return null
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return null
+  return Math.round(parsed)
+}
+
+const normalizeAssetsUrlPrefix = (value) => {
+  if (!value || typeof value !== 'string') return '/assets'
+  const withSlash = value.startsWith('/') ? value : `/${value}`
+  const trimmed = withSlash.replace(/\/+$/, '')
+  return trimmed || '/assets'
+}
+
+const getAssetsUrlPrefix = () =>
+  normalizeAssetsUrlPrefix(
+    Meteor.settings?.ASSETS_URL_PREFIX || Meteor.settings?.ASSETS_STATIC_PREFIX
+  )
+
 const getAssetsDir = () => {
-  const configured = Meteor.settings?.ASSETS_FOLDER
+  const configured =
+    Meteor.settings?.ASSETS_FOLDER || Meteor.settings?.ASSETS_STATIC_DIR
   if (configured && typeof configured === 'string') {
     return path.resolve(configured)
   }
   return path.join(process.cwd(), 'public', 'assets')
+}
+
+const getPublicAssetUrl = (filename) =>
+  `${getAssetsUrlPrefix()}/${encodeURIComponent(filename)}`
+
+const getPathname = (url = '') => {
+  const [pathname] = url.split('?')
+  return pathname || '/'
+}
+
+const isPathInsideBase = (baseDir, targetPath) => {
+  const relative = path.relative(baseDir, targetPath)
+  return relative && !relative.startsWith('..') && !path.isAbsolute(relative)
+}
+
+const getContentTypeByExt = (extname) => {
+  const map = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.ogg': 'audio/ogg',
+    '.mp4': 'video/mp4',
+    '.mov': 'video/quicktime',
+    '.webm': 'video/webm'
+  }
+  return map[extname.toLowerCase()] || 'application/octet-stream'
 }
 
 const readRequestBody = (req) =>
@@ -91,6 +155,51 @@ const parseUpload = (req, bodyBuffer) => {
 
   throw new Meteor.Error('file-not-found')
 }
+
+WebApp.connectHandlers.use(getAssetsUrlPrefix(), async (req, res, next) => {
+  try {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      next()
+      return
+    }
+
+    const assetsDir = getAssetsDir()
+    const pathname = getPathname(req.url)
+    const decodedPath = decodeURIComponent(pathname)
+    const normalized = path.posix.normalize(decodedPath).replace(/^\/+/, '')
+    if (!normalized || normalized === '.' || normalized.includes('\0')) {
+      next()
+      return
+    }
+
+    const filePath = path.join(assetsDir, normalized)
+    if (!isPathInsideBase(assetsDir, filePath)) {
+      json(res, 403, { error: 'forbidden' })
+      return
+    }
+
+    const stats = await fs.stat(filePath).catch(() => null)
+    if (!stats || !stats.isFile()) {
+      next()
+      return
+    }
+
+    res.writeHead(200, {
+      'Content-Type': getContentTypeByExt(path.extname(filePath)),
+      'Content-Length': stats.size,
+      'Cache-Control': 'public, max-age=31536000, immutable'
+    })
+
+    if (req.method === 'HEAD') {
+      res.end()
+      return
+    }
+
+    fsSync.createReadStream(filePath).pipe(res)
+  } catch (error) {
+    json(res, 500, { error: error?.message || 'asset-read-failed' })
+  }
+})
 
 WebApp.connectHandlers.use('/api/assets/edit', async (req, res) => {
   try {
@@ -164,7 +273,7 @@ WebApp.connectHandlers.use('/api/assets/waveform', async (req, res) => {
     const filePath = path.join(assetsDir, filename)
     await fs.writeFile(filePath, buffer)
 
-    const publicUrl = `/assets/${filename}`
+    const publicUrl = getPublicAssetUrl(filename)
     await AssetsCollection.updateAsync(assetId, {
       $set: { waveformUrl: publicUrl, updatedAt: new Date() }
     })
@@ -205,7 +314,7 @@ WebApp.connectHandlers.use('/api/assets/thumbnail', async (req, res) => {
     const filePath = path.join(assetsDir, filename)
     await fs.writeFile(filePath, buffer)
 
-    const publicUrl = `/assets/${filename}`
+    const publicUrl = getPublicAssetUrl(filename)
     await AssetsCollection.updateAsync(assetId, {
       $set: { thumbnailUrl: publicUrl, updatedAt: new Date() }
     })
@@ -251,8 +360,13 @@ WebApp.connectHandlers.use('/api/assets/upload', async (req, res) => {
     const storyboardId = req.headers['x-storyboard-id']
     const shotId = req.headers['x-shot-id']
     const rowId = req.headers['x-row-id']
+    const durationSeconds = parseDurationSeconds(req.headers['x-duration-seconds'])
     if (!storyboardId || !shotId || !rowId) {
       json(res, 400, { error: 'missing-headers' })
+      return
+    }
+    if (!getAllowedTypePrefixForRow(rowId)) {
+      json(res, 400, { error: 'invalid-row-id' })
       return
     }
 
@@ -273,6 +387,10 @@ WebApp.connectHandlers.use('/api/assets/upload', async (req, res) => {
         json(res, 400, { error: 'unsupported-type' })
         return
       }
+      if (!isTypeAllowedForRow(rowId, type)) {
+        json(res, 400, { error: 'unsupported-type-for-row' })
+        return
+      }
       filename = `${nanoid()}.${extForType(type)}`
       filePath = path.join(assetsDir, filename)
       await fs.writeFile(filePath, body)
@@ -285,6 +403,10 @@ WebApp.connectHandlers.use('/api/assets/upload', async (req, res) => {
       }
       if (!ALLOWED_TYPES.has(type)) {
         json(res, 400, { error: 'unsupported-type' })
+        return
+      }
+      if (!isTypeAllowedForRow(rowId, type)) {
+        json(res, 400, { error: 'unsupported-type-for-row' })
         return
       }
       filename = `${nanoid()}.${extForType(type)}`
@@ -300,17 +422,19 @@ WebApp.connectHandlers.use('/api/assets/upload', async (req, res) => {
       fileSize = stats.size
     }
 
-    const publicUrl = `/assets/${filename}`
+    const publicUrl = getPublicAssetUrl(filename)
     const assetId = await AssetsCollection.insertAsync({
       storyboardId,
       shotId,
       rowId,
       url: publicUrl,
+      ...(durationSeconds ? { duration: durationSeconds } : {}),
       status: 'completed',
       meta: {
         content_type: type,
         file_size: fileSize,
-        file_name: filename
+        file_name: filename,
+        ...(durationSeconds ? { duration_seconds: durationSeconds } : {})
       },
       createdAt: new Date()
     })

@@ -7,11 +7,84 @@ import {
   mdiHistory,
   mdiImage,
   mdiImageEdit,
+  mdiVideo,
+  mdiMicrophone,
   mdiUpload,
-  mdiFormatText,
 } from "@mdi/js";
 import WaveSurfer from "wavesurfer.js";
-import { Input, ALL_FORMATS, UrlSource, CanvasSink } from "mediabunny";
+
+const UPLOAD_ACCEPT_BY_ROW = {
+  "source-clip": "video/*",
+  "source-image": "image/*",
+  "edit-image": "image/*",
+  "output-video": "video/*",
+  audio: "audio/*",
+};
+
+const getUploadAccept = (rowId) => UPLOAD_ACCEPT_BY_ROW[rowId] || "*/*";
+
+const HEADER_ICON_BY_ROW = {
+  "source-clip": mdiVideo,
+  "source-image": mdiImage,
+  "edit-image": mdiImageEdit,
+  "output-video": mdiVideo,
+  audio: mdiMicrophone,
+};
+
+const getHeaderIcon = (rowId) => HEADER_ICON_BY_ROW[rowId] || mdiImage;
+
+const getWaveformDataUrl = (decodedData) => {
+  if (!decodedData) return null;
+  const channel = decodedData.getChannelData(0);
+  if (!channel || !channel.length) return null;
+
+  const width = 640;
+  const height = 120;
+  const padding = 10;
+  const centerY = height / 2;
+  const amplitude = (height - padding * 2) / 2;
+  const step = Math.max(1, Math.floor(channel.length / width));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  ctx.fillStyle = "#f8fafc";
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "#475569";
+  ctx.lineWidth = 1;
+
+  for (let x = 0; x < width; x += 1) {
+    const start = x * step;
+    const end = Math.min(channel.length, start + step);
+    let min = 1;
+    let max = -1;
+
+    for (let i = start; i < end; i += 1) {
+      const value = channel[i];
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }
+
+    const y1 = centerY + min * amplitude;
+    const y2 = centerY + max * amplitude;
+    ctx.beginPath();
+    ctx.moveTo(x, y1);
+    ctx.lineTo(x, y2);
+    ctx.stroke();
+  }
+
+  return canvas.toDataURL("image/png");
+};
+
+const formatDurationSeconds = (value) => {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return `${Math.round(seconds)}s`;
+};
 
 export const AssetCard = ({
   row,
@@ -19,8 +92,10 @@ export const AssetCard = ({
   historyCount,
   onSave,
   onGenerate,
+  onGenerateCurrent,
   onGenerateReference,
   hasReference,
+  hasCurrent,
   onOpenHistory,
   onUpload,
 }) => {
@@ -45,8 +120,8 @@ export const AssetCard = ({
     const container = waveformRef.current;
     const wavesurfer = WaveSurfer.create({
       container,
-      waveColor: "#34d399",
-      progressColor: "#059669",
+      waveColor: "#94a3b8",
+      progressColor: "#475569",
       height: 48,
       barWidth: 2,
       barGap: 2,
@@ -56,11 +131,9 @@ export const AssetCard = ({
 
     wavesurfer.on("ready", async () => {
       try {
-        const shadow = container.shadowRoot;
-        const canvas =
-          shadow?.querySelector("canvas") || container.querySelector("canvas");
-        if (!canvas) return;
-        const dataUrl = canvas.toDataURL("image/png");
+        const decodedData = wavesurfer.getDecodedData();
+        const dataUrl = getWaveformDataUrl(decodedData);
+        if (!dataUrl) return;
         setIsWaveformUploading(true);
         await fetch("/api/assets/waveform", {
           method: "POST",
@@ -92,70 +165,56 @@ export const AssetCard = ({
     const video = document.createElement("video");
     video.src = asset.url;
     video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
 
-    const handleLoadedMetadata = async () => {
+    const handleLoadedData = async () => {
       try {
         setIsThumbnailUploading(true);
-        const input = new Input({
-          source: new UrlSource(asset.url),
-          formats: ALL_FORMATS,
-        });
-        const videoTrack = await input.getPrimaryVideoTrack();
-        if (!videoTrack) return;
-        if (videoTrack.codec === null) return;
-        if (!(await videoTrack.canDecode())) return;
+        if (!video.videoWidth || !video.videoHeight) return;
 
         const targetSize = 320;
         const width =
-          videoTrack.displayWidth > videoTrack.displayHeight
+          video.videoWidth > video.videoHeight
             ? targetSize
-            : Math.floor(
-                (targetSize * videoTrack.displayWidth) /
-                  videoTrack.displayHeight
-              );
+            : Math.floor((targetSize * video.videoWidth) / video.videoHeight);
         const height =
-          videoTrack.displayHeight > videoTrack.displayWidth
+          video.videoHeight > video.videoWidth
             ? targetSize
-            : Math.floor(
-                (targetSize * videoTrack.displayHeight) /
-                  videoTrack.displayWidth
-              );
+            : Math.floor((targetSize * video.videoHeight) / video.videoWidth);
+        const dpr = window.devicePixelRatio || 1;
 
-        const sink = new CanvasSink(videoTrack, {
-          width: Math.floor(width * window.devicePixelRatio),
-          height: Math.floor(height * window.devicePixelRatio),
-          fit: "fill",
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        ctx.scale(dpr, dpr);
+        ctx.drawImage(video, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL("image/png");
+
+        await fetch("/api/assets/thumbnail", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            assetId: asset._id,
+            dataUrl,
+          }),
         });
-        const firstTimestamp = await videoTrack.getFirstTimestamp();
-        for await (const wrappedCanvas of sink.canvasesAtTimestamps([
-          firstTimestamp,
-        ])) {
-          if (!wrappedCanvas) return;
-          const canvasElement = wrappedCanvas.canvas;
-          const dataUrl = canvasElement.toDataURL("image/png");
-          await fetch("/api/assets/thumbnail", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              assetId: asset._id,
-              dataUrl,
-            }),
-          });
-          return;
-        }
       } finally {
         setIsThumbnailUploading(false);
       }
     };
 
-    video.addEventListener("loadedmetadata", handleLoadedMetadata, {
+    video.addEventListener("loadeddata", handleLoadedData, {
       once: true,
     });
 
     return () => {
-      video.removeEventListener("loadedmetadata", handleLoadedMetadata);
+      video.removeEventListener("loadeddata", handleLoadedData);
     };
   }, [asset?._id, asset?.thumbnailUrl, asset?.url, isThumbnailUploading, row.id]);
 
@@ -177,22 +236,30 @@ export const AssetCard = ({
     onGenerateReference({ prompt: nextPrompt });
   };
 
+  const handleGenerateCurrent = () => {
+    if (!row.hasPrompt || !hasCurrent) return;
+    const nextPrompt = prompt.trim();
+    onGenerateCurrent({ prompt: nextPrompt });
+  };
+
   const status = asset?.status || "idle";
   const statusTone =
     status === "completed"
-      ? "bg-emerald-100 text-emerald-700"
+      ? "bg-neutral-900 text-neutral-50"
       : status === "processing"
-        ? "bg-amber-100 text-amber-700"
+        ? "bg-neutral-600 text-neutral-50"
         : status === "pending"
-          ? "bg-slate-100 text-slate-600"
+          ? "bg-neutral-300 text-neutral-900"
           : status === "error"
-            ? "bg-rose-100 text-rose-700"
-            : "bg-slate-100 text-slate-600";
+            ? "bg-neutral-900 text-neutral-50"
+            : "bg-neutral-300 text-neutral-900";
 
-  const headerIcon =
-    row.id === "source-image" ? mdiImage : row.id === "edit-image" ? mdiImageEdit : null;
-
-  const actionIcon = mdiFormatText;
+  const headerIcon = getHeaderIcon(row.id);
+  const saveIcon = mdiContentSave;
+  const generateIcon = mdiWandSparkles;
+  const isProcessing = status === "processing";
+  const durationLabel =
+    row.id === "audio" ? formatDurationSeconds(asset?.duration) : null;
 
   const handleUploadClick = () => {
     if (!fileInputRef.current) return;
@@ -207,44 +274,56 @@ export const AssetCard = ({
   };
 
   return (
-    <div className="flex min-h-[120px] flex-col overflow-hidden rounded-2xl border border-emerald-100 bg-emerald-50/70">
+    <div className="flex min-h-[120px] flex-col overflow-hidden bg-neutral-300">
       <input
         ref={fileInputRef}
         type="file"
+        accept={getUploadAccept(row.id)}
         className="hidden"
         onChange={handleFileChange}
       />
-      <div className="flex items-center justify-between border-b border-emerald-100 bg-white/80 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-emerald-700">
+      <div className="flex items-center justify-between bg-neutral-600 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-50">
         <span className="inline-flex items-center gap-2">
-          {headerIcon ? <Icon path={headerIcon} size={0.7} /> : null}
-          {row.label}
+          <Icon path={headerIcon} size={0.8} />
+          {durationLabel ? (
+            <span className="rounded-full bg-neutral-900 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-neutral-50">
+              {durationLabel}
+            </span>
+          ) : null}
         </span>
         <div className="flex items-center gap-2">
           <Button
             size="sm"
             isIconOnly
-            variant="bordered"
+            variant="tertiary"
             aria-label="Upload asset"
-            className="h-7 w-7 rounded-full"
+            className="h-7 w-7 rounded-full bg-neutral-50 text-neutral-900"
             onPress={handleUploadClick}
           >
             <Icon path={mdiUpload} size={0.7} />
           </Button>
           <span
-            className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] ${statusTone}`}
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] ${statusTone}`}
           >
-            {status}
+            {isProcessing ? (
+              <>
+                <span className="h-2.5 w-2.5 animate-spin rounded-full border border-neutral-50 border-t-transparent" />
+                Processing
+              </>
+            ) : (
+              status
+            )}
           </span>
         </div>
       </div>
       <div className="flex flex-1 flex-col gap-2 px-3 py-3">
         <button
           type="button"
-          className="overflow-hidden rounded-xl border border-emerald-100 bg-white text-left"
+          className="overflow-hidden bg-neutral-50 text-left"
           onClick={onOpenHistory}
         >
           {row.id === "audio" && asset?.url ? (
-            <div className="flex h-32 flex-col items-center justify-center gap-2 bg-emerald-50 px-3">
+            <div className="flex h-32 flex-col items-center justify-center gap-2 bg-neutral-50 px-3">
               {asset?.waveformUrl ? (
                 <img
                   src={asset.waveformUrl}
@@ -254,7 +333,7 @@ export const AssetCard = ({
               ) : (
                 <div
                   ref={waveformRef}
-                  className="h-12 w-full overflow-hidden rounded-lg bg-white"
+                  className="h-12 w-full overflow-hidden bg-neutral-300"
                 />
               )}
             </div>
@@ -266,7 +345,7 @@ export const AssetCard = ({
                 className="h-32 w-full object-cover"
               />
             ) : (
-              <div className="flex h-32 items-center justify-center bg-emerald-50 text-xs text-emerald-400">
+              <div className="flex h-32 items-center justify-center bg-neutral-50 text-xs text-neutral-400">
                 {isThumbnailUploading ? "Generating thumbnail..." : "No thumbnail yet"}
               </div>
             )
@@ -276,12 +355,17 @@ export const AssetCard = ({
               alt={`${row.label} preview`}
               className="h-32 w-full object-cover"
             />
+          ) : isProcessing ? (
+            <div className="flex h-32 items-center justify-center gap-2 bg-neutral-50 text-xs text-neutral-500">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-500 border-t-transparent" />
+              Processing...
+            </div>
           ) : (
-            <div className="flex h-32 items-center justify-center bg-emerald-50 text-xs text-emerald-400">
+            <div className="flex h-32 items-center justify-center bg-neutral-50 text-xs text-neutral-400">
               No preview yet
             </div>
           )}
-          <div className="flex items-center justify-between px-3 py-2 text-[11px] text-emerald-600">
+          <div className="flex items-center justify-between px-3 py-2 text-[11px] text-neutral-600">
             <span>Preview</span>
             <span className="inline-flex items-center gap-1">
               <Icon path={mdiHistory} size={0.7} />
@@ -292,7 +376,7 @@ export const AssetCard = ({
         {row.hasPrompt ? (
           <div className="flex flex-col gap-2">
             <textarea
-              className="min-h-[70px] w-full resize-none rounded-xl border border-emerald-100 bg-white px-3 py-2 text-xs text-slate-700 shadow-sm outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-200"
+              className="min-h-[70px] w-full resize-none bg-neutral-50 px-3 py-2 text-xs text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-600"
               placeholder="Enter prompt..."
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
@@ -300,20 +384,20 @@ export const AssetCard = ({
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"
-                variant="bordered"
+                variant="tertiary"
                 isIconOnly
                 aria-label="Save prompt"
-                className="rounded-full"
+                className="rounded-full bg-neutral-600 text-neutral-50"
                 onPress={handleSave}
               >
-                <Icon path={actionIcon} size={0.8} />
+                <Icon path={saveIcon} size={0.8} />
               </Button>
               {row.id === "output-video" ? (
                 <>
                   <Button
                     size="sm"
                     variant="tertiary"
-                    className="rounded-full px-3 text-[11px] font-semibold uppercase tracking-[0.2em]"
+                    className="rounded-full bg-neutral-600 px-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-50"
                     onPress={handleGenerate}
                     isDisabled={status === "processing" || status === "pending"}
                   >
@@ -322,7 +406,7 @@ export const AssetCard = ({
                   <Button
                     size="sm"
                     variant="tertiary"
-                    className="rounded-full px-3 text-[11px] font-semibold uppercase tracking-[0.2em]"
+                    className="rounded-full bg-neutral-600 px-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-50"
                     onPress={handleGenerateReference}
                     isDisabled={!hasReference}
                   >
@@ -334,7 +418,7 @@ export const AssetCard = ({
                   <Button
                     size="sm"
                     variant="tertiary"
-                    className="rounded-full px-3 text-[11px] font-semibold uppercase tracking-[0.2em]"
+                    className="rounded-full bg-neutral-600 px-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-50"
                     onPress={handleGenerate}
                     isDisabled={status === "processing" || status === "pending"}
                   >
@@ -342,20 +426,31 @@ export const AssetCard = ({
                   </Button>
                 </>
               ) : row.id === "edit-image" ? (
-                <Button
-                  size="sm"
-                  variant="tertiary"
-                  className="rounded-full px-3 text-[11px] font-semibold uppercase tracking-[0.2em]"
-                  onPress={handleGenerate}
-                  isDisabled={status === "processing" || status === "pending"}
-                >
-                  I2IE
-                </Button>
+                <>
+                  <Button
+                    size="sm"
+                    variant="tertiary"
+                    className="rounded-full bg-neutral-600 px-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-50"
+                    onPress={handleGenerate}
+                    isDisabled={status === "processing" || status === "pending"}
+                  >
+                    edit source
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="tertiary"
+                    className="rounded-full bg-neutral-600 px-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-50"
+                    onPress={handleGenerateCurrent}
+                    isDisabled={!hasCurrent || status === "processing" || status === "pending"}
+                  >
+                    edit current
+                  </Button>
+                </>
               ) : row.id === "source-image" ? (
                 <Button
                   size="sm"
                   variant="tertiary"
-                  className="rounded-full px-3 text-[11px] font-semibold uppercase tracking-[0.2em]"
+                  className="rounded-full bg-neutral-600 px-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-50"
                   onPress={handleGenerate}
                   isDisabled={status === "processing" || status === "pending"}
                 >
@@ -364,22 +459,24 @@ export const AssetCard = ({
               ) : (
                 <Button
                   size="sm"
+                  variant="tertiary"
                   isIconOnly
                   aria-label="Generate asset"
-                  className="rounded-full"
-                  color="success"
+                  className="rounded-full bg-neutral-900 text-neutral-50 hover:bg-neutral-600"
                   onPress={handleGenerate}
                   isDisabled={status === "processing" || status === "pending"}
                 >
-                  <Icon path={actionIcon} size={0.8} />
+                  <Icon path={generateIcon} size={0.8} />
                 </Button>
               )}
             </div>
           </div>
         ) : (
-          <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-emerald-200 bg-white/70 text-[11px] text-emerald-600">
-            No asset
-          </div>
+          row.id === "source-clip" ? null : (
+            <div className="flex flex-1 items-center justify-center rounded-xl bg-neutral-50 text-[11px] text-neutral-600">
+              No asset
+            </div>
+          )
         )}
       </div>
     </div>

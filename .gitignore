@@ -16,3 +16,5 @@ public/assets/
 .DS_Store
 
 settings.json
+
+.uploads/
