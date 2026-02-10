@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Button } from "@heroui/react";
+import { Button, ButtonGroup } from "@heroui/react";
+import { useDraggable, useDroppable } from "@dnd-kit/core";
 import Icon from "@mdi/react";
 import {
   mdiContentSave,
@@ -18,7 +19,7 @@ const UPLOAD_ACCEPT_BY_ROW = {
   "source-image": "image/*",
   "edit-image": "image/*",
   "output-video": "video/*",
-  audio: "audio/*",
+  audio: "audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/ogg,video/mp4",
 };
 
 const getUploadAccept = (rowId) => UPLOAD_ACCEPT_BY_ROW[rowId] || "*/*";
@@ -86,16 +87,46 @@ const formatDurationSeconds = (value) => {
   return `${Math.round(seconds)}s`;
 };
 
+const getVideoFpsFromElement = (video) => {
+  if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return null;
+  const quality =
+    typeof video.getVideoPlaybackQuality === "function"
+      ? video.getVideoPlaybackQuality()
+      : null;
+  const frameCandidates = [
+    quality?.totalVideoFrames,
+    video.webkitDecodedFrameCount,
+    video.mozPresentedFrames,
+    video.mozDecodedFrames,
+  ].map((value) => Number(value));
+  const frameCount = frameCandidates.find(
+    (value) => Number.isFinite(value) && value > 0
+  );
+  if (!Number.isFinite(frameCount) || frameCount <= 0) return null;
+  const fps = frameCount / video.duration;
+  if (!Number.isFinite(fps) || fps <= 0) return null;
+  return Math.round(fps * 100) / 100;
+};
+
 export const AssetCard = ({
+  shotId,
   row,
   asset,
   historyCount,
   onSave,
   onGenerate,
   onGenerateCurrent,
+  onGenerateTailFrame,
+  onGenerateStartEnd,
   onGenerateReference,
   hasReference,
   hasCurrent,
+  hasSourceInput,
+  hasTailFrame,
+  hasStartEnd,
+  canDropAsset,
+  isDropEnabled,
+  onUpdateVideoMetadata,
   onOpenHistory,
   onUpload,
 }) => {
@@ -105,6 +136,33 @@ export const AssetCard = ({
   const waveformInstanceRef = useRef(null);
   const [isWaveformUploading, setIsWaveformUploading] = useState(false);
   const [isThumbnailUploading, setIsThumbnailUploading] = useState(false);
+  const metadataSyncedRef = useRef(new Set());
+  const dropId = `slot:${shotId}:${row.id}`;
+  const draggableId = `asset:${asset?._id || `${shotId}:${row.id}:empty`}`;
+  const { setNodeRef: setDropNodeRef, isOver } = useDroppable({
+    id: dropId,
+    disabled: !isDropEnabled,
+    data: {
+      type: "asset-slot",
+      shotId,
+      rowId: row.id,
+    },
+  });
+  const {
+    attributes: dragAttributes,
+    listeners: dragListeners,
+    setNodeRef: setDragNodeRef,
+    isDragging,
+  } = useDraggable({
+    id: draggableId,
+    disabled: !asset?._id,
+    data: {
+      type: "asset",
+      assetId: asset?._id || null,
+      shotId,
+      rowId: row.id,
+    },
+  });
 
   useEffect(() => {
     setPrompt(asset?.prompt || "");
@@ -155,6 +213,41 @@ export const AssetCard = ({
       wavesurfer.destroy();
     };
   }, [asset?._id, asset?.url, asset?.waveformUrl, isWaveformUploading, row.id]);
+
+  useEffect(() => {
+    if (row.id !== "source-clip" && row.id !== "output-video") return;
+    if (!asset?.url) return;
+    if (metadataSyncedRef.current.has(asset._id)) return;
+
+    const video = document.createElement("video");
+    video.src = asset.url;
+    video.preload = "metadata";
+
+    const handleLoadedMetadata = async () => {
+      const duration = Number(video.duration);
+      const width = Number(video.videoWidth || 0);
+      const height = Number(video.videoHeight || 0);
+      const fps = getVideoFpsFromElement(video);
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      metadataSyncedRef.current.add(asset._id);
+      if (typeof onUpdateVideoMetadata === "function") {
+        await onUpdateVideoMetadata({
+          duration,
+          fps,
+          width: Number.isFinite(width) && width > 0 ? width : null,
+          height: Number.isFinite(height) && height > 0 ? height : null,
+        });
+      }
+    };
+
+    video.addEventListener("loadedmetadata", handleLoadedMetadata, {
+      once: true,
+    });
+
+    return () => {
+      video.removeEventListener("loadedmetadata", handleLoadedMetadata);
+    };
+  }, [asset?._id, asset?.url, onUpdateVideoMetadata, row.id]);
 
   useEffect(() => {
     if (row.id !== "source-clip" && row.id !== "output-video") return;
@@ -242,6 +335,18 @@ export const AssetCard = ({
     onGenerateCurrent({ prompt: nextPrompt });
   };
 
+  const handleGenerateTailFrame = () => {
+    if (!row.hasPrompt || !hasTailFrame) return;
+    const nextPrompt = prompt.trim();
+    onGenerateTailFrame({ prompt: nextPrompt });
+  };
+
+  const handleGenerateStartEnd = () => {
+    if (!row.hasPrompt || !hasStartEnd) return;
+    const nextPrompt = prompt.trim();
+    onGenerateStartEnd({ prompt: nextPrompt });
+  };
+
   const status = asset?.status || "idle";
   const statusTone =
     status === "completed"
@@ -273,8 +378,17 @@ export const AssetCard = ({
     onUpload(file);
   };
 
+  const dropClass = isOver
+    ? canDropAsset
+      ? "ring-2 ring-neutral-700"
+      : "ring-2 ring-neutral-400"
+    : "";
+
   return (
-    <div className="flex min-h-[120px] flex-col overflow-hidden bg-neutral-300">
+    <div
+      ref={setDropNodeRef}
+      className={`flex min-h-[120px] flex-col overflow-hidden bg-neutral-300 ${dropClass}`}
+    >
       <input
         ref={fileInputRef}
         type="file"
@@ -319,8 +433,13 @@ export const AssetCard = ({
       <div className="flex flex-1 flex-col gap-2 px-3 py-3">
         <button
           type="button"
-          className="overflow-hidden bg-neutral-50 text-left"
+          className={`overflow-hidden bg-neutral-50 text-left ${
+            isDragging ? "opacity-70" : ""
+          }`}
           onClick={onOpenHistory}
+          ref={setDragNodeRef}
+          {...dragListeners}
+          {...dragAttributes}
         >
           {row.id === "audio" && asset?.url ? (
             <div className="flex h-32 flex-col items-center justify-center gap-2 bg-neutral-50 px-3">
@@ -382,92 +501,146 @@ export const AssetCard = ({
               onChange={(event) => setPrompt(event.target.value)}
             />
             <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant="tertiary"
-                isIconOnly
-                aria-label="Save prompt"
-                className="rounded-full bg-neutral-600 text-neutral-50"
-                onPress={handleSave}
-              >
-                <Icon path={saveIcon} size={0.8} />
-              </Button>
               {row.id === "output-video" ? (
                 <>
-                  <Button
+                  <ButtonGroup
                     size="sm"
                     variant="tertiary"
-                    className="rounded-full bg-neutral-600 px-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-50"
-                    onPress={handleGenerate}
-                    isDisabled={status === "processing" || status === "pending"}
+                    fullWidth
+                    className="w-full bg-neutral-600 text-neutral-50"
                   >
-                    T2V
-                  </Button>
-                  <Button
+                    <Button
+                      className="h-7 bg-neutral-600 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50"
+                      onPress={handleSave}
+                    >
+                      save
+                    </Button>
+                    <Button
+                      className="h-7 bg-neutral-600 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50"
+                      onPress={handleGenerate}
+                      isDisabled={status === "processing" || status === "pending"}
+                    >
+                      T2V
+                    </Button>
+                    <Button
+                      className="h-7 bg-neutral-600 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50"
+                      onPress={handleGenerateReference}
+                      isDisabled={!hasReference}
+                    >
+                      R2V
+                    </Button>
+                  </ButtonGroup>
+                  <ButtonGroup
                     size="sm"
                     variant="tertiary"
-                    className="rounded-full bg-neutral-600 px-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-50"
-                    onPress={handleGenerateReference}
-                    isDisabled={!hasReference}
+                    fullWidth
+                    className="w-full bg-neutral-900 text-neutral-50"
                   >
-                    R2V
-                  </Button>
+                    <Button
+                      className="h-7 bg-neutral-900 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50"
+                      onPress={handleGenerateTailFrame}
+                      isDisabled={!hasTailFrame || status === "processing" || status === "pending"}
+                    >
+                      tail frame
+                    </Button>
+                    <Button
+                      className="h-7 bg-neutral-900 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50"
+                      onPress={handleGenerateStartEnd}
+                      isDisabled={!hasStartEnd || status === "processing" || status === "pending"}
+                    >
+                      start + end
+                    </Button>
+                  </ButtonGroup>
                 </>
               ) : row.id === "audio" ? (
-                <>
+                <ButtonGroup
+                  variant="tertiary"
+                  size="sm"
+                  className="bg-neutral-600 text-neutral-50"
+                >
                   <Button
-                    size="sm"
-                    variant="tertiary"
-                    className="rounded-full bg-neutral-600 px-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-50"
+                    isIconOnly
+                    aria-label="Save prompt"
+                    className="h-7 w-7 min-w-7 bg-neutral-600 text-neutral-50"
+                    onPress={handleSave}
+                  >
+                    <Icon path={saveIcon} size={0.7} />
+                  </Button>
+                  <Button
+                    className="h-7 bg-neutral-600 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50"
                     onPress={handleGenerate}
                     isDisabled={status === "processing" || status === "pending"}
                   >
                     T2S
                   </Button>
-                </>
+                </ButtonGroup>
               ) : row.id === "edit-image" ? (
-                <>
+                <ButtonGroup
+                  variant="tertiary"
+                  size="sm"
+                  className="bg-neutral-600 text-neutral-50"
+                >
                   <Button
-                    size="sm"
-                    variant="tertiary"
-                    className="rounded-full bg-neutral-600 px-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-50"
-                    onPress={handleGenerate}
-                    isDisabled={status === "processing" || status === "pending"}
+                    isIconOnly
+                    aria-label="Save prompt"
+                    className="h-7 w-7 min-w-7 bg-neutral-600 text-neutral-50"
+                    onPress={handleSave}
                   >
-                    edit source
+                    <Icon path={saveIcon} size={0.7} />
                   </Button>
                   <Button
-                    size="sm"
-                    variant="tertiary"
-                    className="rounded-full bg-neutral-600 px-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-50"
+                    className="h-7 bg-neutral-600 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50"
+                    onPress={handleGenerate}
+                    isDisabled={!hasSourceInput || status === "processing" || status === "pending"}
+                  >
+                    source
+                  </Button>
+                  <Button
+                    className="h-7 bg-neutral-600 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50"
                     onPress={handleGenerateCurrent}
                     isDisabled={!hasCurrent || status === "processing" || status === "pending"}
                   >
-                    edit current
+                    current
                   </Button>
-                </>
+                </ButtonGroup>
               ) : row.id === "source-image" ? (
-                <Button
-                  size="sm"
+                <ButtonGroup
                   variant="tertiary"
-                  className="rounded-full bg-neutral-600 px-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-50"
-                  onPress={handleGenerate}
-                  isDisabled={status === "processing" || status === "pending"}
+                  size="sm"
+                  className="bg-neutral-600 text-neutral-50"
                 >
-                  T2I
-                </Button>
+                  <Button
+                    isIconOnly
+                    aria-label="Save prompt"
+                    className="h-7 w-7 min-w-7 bg-neutral-600 text-neutral-50"
+                    onPress={handleSave}
+                  >
+                    <Icon path={saveIcon} size={0.7} />
+                  </Button>
+                  <Button
+                    className="h-7 bg-neutral-600 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-50"
+                    onPress={handleGenerate}
+                    isDisabled={status === "processing" || status === "pending"}
+                  >
+                    T2I
+                  </Button>
+                </ButtonGroup>
               ) : (
-                <Button
+                <ButtonGroup
                   size="sm"
                   variant="tertiary"
-                  isIconOnly
-                  aria-label="Generate asset"
-                  className="rounded-full bg-neutral-900 text-neutral-50 hover:bg-neutral-600"
-                  onPress={handleGenerate}
-                  isDisabled={status === "processing" || status === "pending"}
+                  className="bg-neutral-900 text-neutral-50"
                 >
-                  <Icon path={generateIcon} size={0.8} />
-                </Button>
+                  <Button
+                    isIconOnly
+                    aria-label="Generate asset"
+                    className="h-7 w-7 min-w-7 bg-neutral-900 text-neutral-50"
+                    onPress={handleGenerate}
+                    isDisabled={status === "processing" || status === "pending"}
+                  >
+                    <Icon path={generateIcon} size={0.8} />
+                  </Button>
+                </ButtonGroup>
               )}
             </div>
           </div>

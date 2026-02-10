@@ -28,6 +28,9 @@ export const runAssetTask = async ({
     uploadFromUrl
   })
   const mergedParams = { ...params, ...sourceParams }
+  if (!mergedParams.endImage && typeof mergedParams.endImageUrl === 'string') {
+    mergedParams.endImage = mergedParams.endImageUrl
+  }
 
   if (resolvedModel.provider === 'fal') {
     return runFalTask({

@@ -15,6 +15,53 @@ const ACTIVE_FIELD_BY_ROW = {
 
 const getActiveField = (rowId) => ACTIVE_FIELD_BY_ROW[rowId]
 
+const MEDIA_KIND_BY_ROW = {
+  'source-clip': 'video',
+  'output-video': 'video',
+  'source-image': 'image',
+  'edit-image': 'image',
+  audio: 'audio'
+}
+
+const getRowMediaKind = (rowId) => MEDIA_KIND_BY_ROW[rowId] || null
+
+const getAssetMediaKind = (asset) => {
+  const contentType = asset?.meta?.content_type
+  if (typeof contentType === 'string') {
+    if (contentType.startsWith('image/')) return 'image'
+    if (contentType.startsWith('video/')) return 'video'
+    if (contentType.startsWith('audio/')) return 'audio'
+  }
+  return getRowMediaKind(asset?.rowId)
+}
+
+const resolveLinkedSourceAsset = async (asset, depth = 0) => {
+  if (!asset) return asset
+  if (depth > 4) return asset
+  const linkedAssetId = asset.linkedAssetId || asset.duplicatedFromAssetId
+  if (!linkedAssetId) return asset
+
+  const hasUrl = typeof asset.url === 'string' && asset.url.trim().length > 0
+  const hasThumbnail = typeof asset.thumbnailUrl === 'string' && asset.thumbnailUrl.trim().length > 0
+  const hasWaveform = typeof asset.waveformUrl === 'string' && asset.waveformUrl.trim().length > 0
+  if (hasUrl && (hasThumbnail || hasWaveform)) return asset
+
+  const linked = await AssetsCollection.findOneAsync(linkedAssetId)
+  if (!linked) return asset
+  const resolvedLinked = await resolveLinkedSourceAsset(linked, depth + 1)
+
+  return {
+    ...resolvedLinked,
+    ...asset,
+    url: hasUrl ? asset.url : resolvedLinked?.url || '',
+    thumbnailUrl: hasThumbnail ? asset.thumbnailUrl : resolvedLinked?.thumbnailUrl || '',
+    waveformUrl: hasWaveform ? asset.waveformUrl : resolvedLinked?.waveformUrl || '',
+    meta: asset?.meta && Object.keys(asset.meta).length > 0
+      ? asset.meta
+      : resolvedLinked?.meta || {}
+  }
+}
+
 const findActiveAssetByRow = async ({ shotId, rowId }) => {
   const activeField = getActiveField(rowId)
   if (!activeField) return null
@@ -149,7 +196,7 @@ Meteor.methods({
       createdAt: new Date()
     })
   },
-  async 'assets.update' ({ assetId, prompt, url, meta }) {
+  async 'assets.update' ({ assetId, prompt, url, meta, duration }) {
     if (!assetId) {
       throw new Meteor.Error('assets.update.invalid', 'Invalid payload.')
     }
@@ -158,6 +205,9 @@ Meteor.methods({
     if (typeof prompt === 'string') updates.prompt = prompt.trim()
     if (typeof url === 'string') updates.url = url.trim()
     if (meta && typeof meta === 'object') updates.meta = meta
+    if (typeof duration === 'number' && Number.isFinite(duration) && duration > 0) {
+      updates.duration = Math.round(duration)
+    }
     updates.updatedAt = new Date()
 
     await AssetsCollection.updateAsync(assetId, { $set: updates })
@@ -167,6 +217,54 @@ Meteor.methods({
       throw new Meteor.Error('assets.remove.invalid', 'Invalid payload.')
     }
     await AssetsCollection.removeAsync(assetId)
+  },
+  async 'assets.duplicate' ({ storyboardId, sourceAssetId, targetShotId, targetRowId }) {
+    if (!storyboardId || !sourceAssetId || !targetShotId || !targetRowId) {
+      throw new Meteor.Error('assets.duplicate.invalid', 'Invalid payload.')
+    }
+
+    const sourceAsset = await AssetsCollection.findOneAsync({
+      _id: sourceAssetId,
+      storyboardId
+    })
+    if (!sourceAsset) {
+      throw new Meteor.Error('assets.duplicate.missing', 'Source asset not found.')
+    }
+
+    const resolvedSourceAsset = await resolveLinkedSourceAsset(sourceAsset)
+    const sourceKind = getAssetMediaKind(resolvedSourceAsset)
+    const targetKind = getRowMediaKind(targetRowId)
+    if (sourceAsset.shotId === targetShotId && sourceAsset.rowId === targetRowId) {
+      throw new Meteor.Error('assets.duplicate.sameTarget', 'Cannot duplicate to same slot.')
+    }
+    if (!sourceKind || !targetKind || sourceKind !== targetKind) {
+      throw new Meteor.Error('assets.duplicate.mismatch', 'Asset type mismatch.')
+    }
+
+    const assetId = await AssetsCollection.insertAsync({
+      storyboardId,
+      shotId: targetShotId,
+      rowId: targetRowId,
+      prompt: sourceAsset.prompt || '',
+      url: resolvedSourceAsset.url || '',
+      status: sourceAsset.status || 'completed',
+      meta: resolvedSourceAsset.meta || {},
+      waveformUrl: resolvedSourceAsset.waveformUrl || '',
+      thumbnailUrl: resolvedSourceAsset.thumbnailUrl || '',
+      duration: sourceAsset.duration || null,
+      linkedAssetId: sourceAsset._id,
+      linkMode: 'soft',
+      duplicatedFromAssetId: sourceAsset._id,
+      createdAt: new Date()
+    })
+
+    await setActiveAsset({
+      shotId: targetShotId,
+      rowId: targetRowId,
+      assetId
+    })
+
+    return assetId
   },
   async 'assets.setActive' ({ shotId, rowId, assetId }) {
     if (!shotId || !rowId || !assetId) {
@@ -360,7 +458,7 @@ Meteor.methods({
       throw error
     }
   },
-  async 'assets.referenceToVideo' ({ storyboardId, shotId, rowId, prompt, model, aspectRatio, duration, resolution, audio, seed, image, imageUrl, images, imageUrls }) {
+  async 'assets.referenceToVideo' ({ storyboardId, shotId, rowId, prompt, model, aspectRatio, duration, resolution, audio, seed, image, imageUrl, images, imageUrls, endImage, endImageUrl }) {
     if (!storyboardId || !shotId || !rowId || !prompt) {
       throw new Meteor.Error('assets.referenceToVideo.invalid', 'Invalid payload.')
     }
@@ -384,6 +482,8 @@ Meteor.methods({
           seed,
           image,
           imageUrl,
+          endImage,
+          endImageUrl,
           images,
           imageUrls
         },

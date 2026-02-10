@@ -15,6 +15,11 @@ export const FAL_VIDEO_MODELS = {
       prompt: 'prompt',
       aspectRatio: 'aspect_ratio',
       duration: 'duration'
+    },
+    capabilities: {
+      startEndFrame: false,
+      referenceImages: false,
+      imageInputMode: 'none'
     }
   },
   imageToVideo: {
@@ -33,6 +38,11 @@ export const FAL_VIDEO_MODELS = {
       images: 'reference_image_urls',
       aspectRatio: 'aspect_ratio',
       duration: 'duration'
+    },
+    capabilities: {
+      startEndFrame: false,
+      referenceImages: true,
+      imageInputMode: 'multiple'
     }
   },
   viduQ3ImageToVideo: {
@@ -55,6 +65,121 @@ export const FAL_VIDEO_MODELS = {
       resolution: 'resolution',
       audio: 'audio',
       seed: 'seed'
+    },
+    capabilities: {
+      startEndFrame: false,
+      referenceImages: false,
+      imageInputMode: 'single'
+    }
+  },
+  seedanceV1ProStartEndImageToVideo: {
+    key: 'fal.image_to_video.seedance_v1_pro_start_end',
+    provider: 'fal',
+    task: ASSET_TASKS.IMAGE_TO_VIDEO,
+    modelId: 'fal-ai/bytedance/seedance/v1/pro/image-to-video',
+    inputSchema: {
+      prompt: { required: true, type: 'string' },
+      image: { required: true, type: 'string' },
+      endImage: { required: false, type: 'string' },
+      aspectRatio: { required: false, type: 'string' },
+      resolution: { required: false, type: 'string' },
+      duration: { required: false, type: 'string' },
+      cameraFixed: { required: false, type: 'boolean' },
+      seed: { required: false, type: 'number' },
+      enableSafetyChecker: { required: false, type: 'boolean' }
+    },
+    fieldMap: {
+      prompt: 'prompt',
+      image: 'image_url',
+      endImage: 'end_image_url',
+      aspectRatio: 'aspect_ratio',
+      resolution: 'resolution',
+      duration: 'duration',
+      cameraFixed: 'camera_fixed',
+      seed: 'seed',
+      enableSafetyChecker: 'enable_safety_checker'
+    },
+    defaults: {
+      aspectRatio: 'auto',
+      resolution: '1080p',
+      duration: '5',
+      enableSafetyChecker: true
+    },
+    capabilities: {
+      startEndFrame: true,
+      referenceImages: true,
+      imageInputMode: 'single_or_multiple'
+    }
+  },
+  veo31FastFirstLastFrameToVideo: {
+    key: 'fal.image_to_video.veo31_fast_first_last',
+    provider: 'fal',
+    task: ASSET_TASKS.IMAGE_TO_VIDEO,
+    modelId: 'fal-ai/veo3.1/fast/first-last-frame-to-video',
+    inputSchema: {
+      prompt: { required: true, type: 'string' },
+      image: { required: true, type: 'string' },
+      endImage: { required: true, type: 'string' },
+      aspectRatio: { required: false, type: 'string' },
+      duration: { required: false, type: 'string' },
+      negativePrompt: { required: false, type: 'string' },
+      resolution: { required: false, type: 'string' },
+      generateAudio: { required: false, type: 'boolean' },
+      seed: { required: false, type: 'number' },
+      autoFix: { required: false, type: 'boolean' }
+    },
+    fieldMap: {
+      prompt: 'prompt',
+      image: 'first_frame_url',
+      endImage: 'last_frame_url',
+      aspectRatio: 'aspect_ratio',
+      duration: 'duration',
+      negativePrompt: 'negative_prompt',
+      resolution: 'resolution',
+      generateAudio: 'generate_audio',
+      seed: 'seed',
+      autoFix: 'auto_fix'
+    },
+    defaults: {
+      aspectRatio: 'auto',
+      duration: '8s',
+      resolution: '720p',
+      generateAudio: true
+    },
+    capabilities: {
+      startEndFrame: true,
+      referenceImages: false,
+      imageInputMode: 'single'
+    }
+  },
+  grokImagineImageToVideo: {
+    key: 'fal.image_to_video.grok_imagine',
+    provider: 'fal',
+    task: ASSET_TASKS.IMAGE_TO_VIDEO,
+    modelId: 'xai/grok-imagine-video/image-to-video',
+    inputSchema: {
+      prompt: { required: true, type: 'string' },
+      image: { required: true, type: 'string' },
+      duration: { required: false, type: 'number' },
+      aspectRatio: { required: false, type: 'string' },
+      resolution: { required: false, type: 'string' }
+    },
+    fieldMap: {
+      prompt: 'prompt',
+      image: 'image_url',
+      duration: 'duration',
+      aspectRatio: 'aspect_ratio',
+      resolution: 'resolution'
+    },
+    defaults: {
+      duration: 6,
+      aspectRatio: 'auto',
+      resolution: '720p'
+    },
+    capabilities: {
+      startEndFrame: false,
+      referenceImages: false,
+      imageInputMode: 'single'
     }
   }
 }

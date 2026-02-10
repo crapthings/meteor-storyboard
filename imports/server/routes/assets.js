@@ -30,6 +30,36 @@ const ALLOWED_TYPE_PREFIX_BY_ROW = {
   audio: 'audio/'
 }
 
+const ALLOWED_TYPES_BY_ROW = {
+  'source-clip': new Set([
+    'video/mp4',
+    'video/quicktime',
+    'video/webm'
+  ]),
+  'source-image': new Set([
+    'image/png',
+    'image/jpeg',
+    'image/webp'
+  ]),
+  'edit-image': new Set([
+    'image/png',
+    'image/jpeg',
+    'image/webp'
+  ]),
+  'output-video': new Set([
+    'video/mp4',
+    'video/quicktime',
+    'video/webm'
+  ]),
+  audio: new Set([
+    'audio/mpeg',
+    'audio/mp3',
+    'audio/wav',
+    'audio/x-wav',
+    'audio/ogg'
+  ])
+}
+
 const json = (res, status, payload) => {
   res.writeHead(status, {
     'Content-Type': 'application/json',
@@ -41,8 +71,11 @@ const json = (res, status, payload) => {
 const getAllowedTypePrefixForRow = (rowId) => ALLOWED_TYPE_PREFIX_BY_ROW[rowId]
 
 const isTypeAllowedForRow = (rowId, type) => {
+  if (typeof type !== 'string') return false
+  const rowSet = ALLOWED_TYPES_BY_ROW[rowId]
+  if (rowSet) return rowSet.has(type)
   const allowedPrefix = getAllowedTypePrefixForRow(rowId)
-  if (!allowedPrefix || typeof type !== 'string') return false
+  if (!allowedPrefix) return false
   return type.startsWith(allowedPrefix)
 }
 
@@ -101,6 +134,38 @@ const getContentTypeByExt = (extname) => {
     '.webm': 'video/webm'
   }
   return map[extname.toLowerCase()] || 'application/octet-stream'
+}
+
+const parseByteRange = (rangeHeader, fileSize) => {
+  if (!rangeHeader || typeof rangeHeader !== 'string') return null
+  const match = rangeHeader.match(/^bytes=(\d*)-(\d*)$/i)
+  if (!match) return 'invalid'
+
+  const startRaw = match[1]
+  const endRaw = match[2]
+  if (!startRaw && !endRaw) return 'invalid'
+
+  let start = 0
+  let end = fileSize - 1
+
+  if (startRaw && endRaw) {
+    start = Number(startRaw)
+    end = Number(endRaw)
+  } else if (startRaw) {
+    start = Number(startRaw)
+    end = fileSize - 1
+  } else {
+    const suffixLength = Number(endRaw)
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) return 'invalid'
+    start = Math.max(fileSize - suffixLength, 0)
+    end = fileSize - 1
+  }
+
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 'invalid'
+  if (start < 0 || end < 0 || start > end || start >= fileSize) return 'invalid'
+  if (end >= fileSize) end = fileSize - 1
+
+  return { start, end }
 }
 
 const readRequestBody = (req) =>
@@ -184,10 +249,46 @@ WebApp.connectHandlers.use(getAssetsUrlPrefix(), async (req, res, next) => {
       return
     }
 
+    const contentType = getContentTypeByExt(path.extname(filePath))
+    const cacheControl = 'public, max-age=31536000, immutable'
+    const rangeHeader = req.headers.range
+    const parsedRange = parseByteRange(rangeHeader, stats.size)
+
+    if (parsedRange === 'invalid') {
+      res.writeHead(416, {
+        'Content-Range': `bytes */${stats.size}`,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'no-store'
+      })
+      res.end()
+      return
+    }
+
+    if (parsedRange) {
+      const { start, end } = parsedRange
+      const contentLength = end - start + 1
+      res.writeHead(206, {
+        'Content-Type': contentType,
+        'Content-Length': contentLength,
+        'Content-Range': `bytes ${start}-${end}/${stats.size}`,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': cacheControl
+      })
+
+      if (req.method === 'HEAD') {
+        res.end()
+        return
+      }
+
+      fsSync.createReadStream(filePath, { start, end }).pipe(res)
+      return
+    }
+
     res.writeHead(200, {
-      'Content-Type': getContentTypeByExt(path.extname(filePath)),
+      'Content-Type': contentType,
       'Content-Length': stats.size,
-      'Cache-Control': 'public, max-age=31536000, immutable'
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': cacheControl
     })
 
     if (req.method === 'HEAD') {

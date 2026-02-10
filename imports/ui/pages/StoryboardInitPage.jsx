@@ -2,8 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
+  PointerSensor,
   useDraggable,
   useDroppable,
+  useSensor,
+  useSensors,
 } from "@dnd-kit/core";
 import { Meteor } from "meteor/meteor";
 import { useFind, useSubscribe } from "meteor/react-meteor-data";
@@ -13,8 +16,19 @@ import {
   Button,
   Dropdown,
   Label,
+  ListBox,
   Modal,
+  Select,
 } from "@heroui/react";
+import {
+  ALL_FORMATS,
+  BlobSource,
+  BufferTarget,
+  Conversion,
+  Input,
+  WavOutputFormat,
+  Output,
+} from "mediabunny";
 import { StoryboardsCollection } from "../../api/storyboards.js";
 import { ShotsCollection } from "../../api/shots.js";
 import { AssetsCollection } from "../../api/assets.js";
@@ -65,6 +79,26 @@ const ACTIVE_FIELD_BY_ROW = {
   audio: "activeSourceAudioId",
 };
 
+const MEDIA_KIND_BY_ROW = {
+  "source-clip": "video",
+  "output-video": "video",
+  "source-image": "image",
+  "edit-image": "image",
+  audio: "audio",
+};
+
+const getRowMediaKind = (rowId) => MEDIA_KIND_BY_ROW[rowId] || null;
+
+const getAssetMediaKind = (asset) => {
+  const contentType = asset?.meta?.content_type;
+  if (typeof contentType === "string") {
+    if (contentType.startsWith("image/")) return "image";
+    if (contentType.startsWith("video/")) return "video";
+    if (contentType.startsWith("audio/")) return "audio";
+  }
+  return getRowMediaKind(asset?.rowId);
+};
+
 const MODEL_PICKER_COLUMNS = [
   {
     id: "textToImage",
@@ -90,13 +124,25 @@ const MODEL_PICKER_COLUMNS = [
     id: "imageToVideo",
     label: "image to video",
     options: Object.values(FAL_VIDEO_MODELS).filter(
-      (model) => model.task === "image_to_video"
+      (model) =>
+        model.task === "image_to_video" &&
+        !model?.capabilities?.startEndFrame
     ),
     defaultModel: FAL_VIDEO_MODELS.imageToVideo?.key,
   },
   {
+    id: "startEndVideo",
+    label: "first/last frame video",
+    options: Object.values(FAL_VIDEO_MODELS).filter(
+      (model) =>
+        model.task === "image_to_video" &&
+        Boolean(model?.capabilities?.startEndFrame)
+    ),
+    defaultModel: FAL_VIDEO_MODELS.veo31FastFirstLastFrameToVideo?.key,
+  },
+  {
     id: "speech",
-    label: "speech",
+    label: "text to speech",
     options: Object.values(FAL_SPEECH_MODELS),
     defaultModel: FAL_SPEECH_MODELS.default?.key,
   },
@@ -104,8 +150,7 @@ const MODEL_PICKER_COLUMNS = [
 
 const getModelLabel = (model) => {
   if (!model?.modelId) return model?.key || "model";
-  const parts = model.modelId.split("/");
-  return parts.slice(-2).join("/");
+  return model.modelId;
 };
 
 const getAudioDurationInSeconds = (file) =>
@@ -140,6 +185,61 @@ const getAudioDurationInSeconds = (file) =>
     audio.src = objectUrl;
   });
 
+const buildAudioFilenameFromVideo = (filename = "audio.mp4") => {
+  const dotIndex = filename.lastIndexOf(".");
+  const base = dotIndex > 0 ? filename.slice(0, dotIndex) : filename;
+  return `${base}.wav`;
+};
+
+const extractAudioFromMp4File = async (file) => {
+  const input = new Input({
+    source: new BlobSource(file),
+    formats: ALL_FORMATS,
+  });
+  const output = new Output({
+    format: new WavOutputFormat(),
+    target: new BufferTarget(),
+  });
+
+  try {
+    const conversion = await Conversion.init({
+      input,
+      output,
+      video: { discard: true },
+      audio: { codec: "pcm-s16", forceTranscode: true },
+      showWarnings: false,
+    });
+    if (!conversion.isValid) {
+      throw new Error("Audio extraction is not supported in this browser environment.");
+    }
+    await conversion.execute();
+    const buffer = output.target.buffer;
+    return new File([buffer], buildAudioFilenameFromVideo(file.name), {
+      type: "audio/wav",
+    });
+  } finally {
+    if (typeof input.dispose === "function") {
+      await input.dispose();
+    }
+  }
+};
+
+const createBlackFrameDataUrl = (aspectRatio = "16:9") => {
+  const canvas = document.createElement("canvas");
+  if (aspectRatio === "9:16") {
+    canvas.width = 720;
+    canvas.height = 1280;
+  } else {
+    canvas.width = 1280;
+    canvas.height = 720;
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/png");
+};
+
 const ShotColumn = ({
   shot,
   children,
@@ -157,11 +257,11 @@ const ShotColumn = ({
     transform,
     isDragging,
   } = useDraggable({
-    id: shot._id,
+    id: `shot:${shot._id}`,
   });
 
   const { setNodeRef: setDropRef, isOver } = useDroppable({
-    id: shot._id,
+    id: `shot:${shot._id}`,
   });
 
   const style = transform
@@ -420,6 +520,7 @@ export const StoryboardInitPage = () => {
   );
   const [orderedIds, setOrderedIds] = useState(null);
   const [activeShotId, setActiveShotId] = useState(null);
+  const [activeAssetDragId, setActiveAssetDragId] = useState(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [historyTarget, setHistoryTarget] = useState(null);
   const [historySelectedId, setHistorySelectedId] = useState(null);
@@ -428,6 +529,14 @@ export const StoryboardInitPage = () => {
   const sourceImageInputRef = useRef(null);
   const [isImporting, setIsImporting] = useState(false);
   const [clearConfirmValue, setClearConfirmValue] = useState("");
+  const [modelPickerQueryByColumn, setModelPickerQueryByColumn] = useState({});
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    })
+  );
 
   const activeStoryboard = storyboards.find(
     (storyboard) => storyboard._id === storyboardId
@@ -452,9 +561,64 @@ export const StoryboardInitPage = () => {
     });
   };
 
+  const getModelPickerQuery = (columnId) => modelPickerQueryByColumn[columnId] || "";
+
+  const setModelPickerQuery = (columnId, value) => {
+    setModelPickerQueryByColumn((current) => ({
+      ...current,
+      [columnId]: value,
+    }));
+  };
+
+  const getFilteredModelOptions = (column) => {
+    const query = getModelPickerQuery(column.id).trim().toLowerCase();
+    if (!query) return column.options;
+    return column.options.filter((option) => {
+      const label = getModelLabel(option).toLowerCase();
+      return label.includes(query);
+    });
+  };
+
+  const normalizeSelectValue = (value) => {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) return value[0] || null;
+    return null;
+  };
+
   const assetsById = useMemo(() => {
     return new Map(assets.map((asset) => [asset._id, asset]));
   }, [assets]);
+
+  const resolveLinkedAsset = (asset, depth = 0) => {
+    if (!asset) return asset;
+    if (depth > 4) return asset;
+    const linkedAssetId = asset.linkedAssetId || asset.duplicatedFromAssetId;
+    if (!linkedAssetId) return asset;
+    const linked = assetsById.get(linkedAssetId);
+    if (!linked) return asset;
+    const resolvedLinked = resolveLinkedAsset(linked, depth + 1);
+    const hasUrl = typeof asset.url === "string" && asset.url.trim().length > 0;
+    const hasThumbnail =
+      typeof asset.thumbnailUrl === "string" && asset.thumbnailUrl.trim().length > 0;
+    const hasWaveform =
+      typeof asset.waveformUrl === "string" && asset.waveformUrl.trim().length > 0;
+
+    return {
+      ...resolvedLinked,
+      ...asset,
+      url: hasUrl ? asset.url : resolvedLinked?.url || "",
+      thumbnailUrl: hasThumbnail
+        ? asset.thumbnailUrl
+        : resolvedLinked?.thumbnailUrl || "",
+      waveformUrl: hasWaveform
+        ? asset.waveformUrl
+        : resolvedLinked?.waveformUrl || "",
+      meta:
+        asset?.meta && Object.keys(asset.meta).length > 0
+          ? asset.meta
+          : resolvedLinked?.meta || {},
+    };
+  };
 
   const assetsByShotRowList = useMemo(() => {
     const lookup = new Map();
@@ -476,6 +640,10 @@ export const StoryboardInitPage = () => {
     const lookup = new Map(shots.map((shot) => [shot._id, shot]));
     return orderedIds.map((id) => lookup.get(id)).filter(Boolean);
   }, [orderedIds, shots]);
+
+  const activeDraggedAsset = activeAssetDragId
+    ? assetsById.get(activeAssetDragId) || null
+    : null;
 
   useEffect(() => {
     if (!orderedIds) return;
@@ -533,19 +701,59 @@ export const StoryboardInitPage = () => {
   };
 
   const handleDragStart = (event) => {
-    if (event?.active?.id) {
-      setActiveShotId(event.active.id);
+    const activeId = String(event?.active?.id || "");
+    if (!activeId) return;
+    if (activeId.startsWith("asset:")) {
+      setActiveAssetDragId(activeId.replace("asset:", ""));
+      return;
+    }
+    if (activeId.startsWith("shot:")) {
+      setActiveShotId(activeId.replace("shot:", ""));
     }
   };
 
   const handleDragEnd = async (event) => {
     const { active, over } = event;
+    const activeId = String(active?.id || "");
+    const overId = String(over?.id || "");
+
+    if (activeId.startsWith("asset:")) {
+      setActiveAssetDragId(null);
+      if (!overId.startsWith("slot:")) return;
+
+      const sourceAssetId = activeId.replace("asset:", "");
+      const targetParts = overId.split(":");
+      const targetShotId = targetParts[1];
+      const targetRowId = targetParts[2];
+      if (!sourceAssetId || !targetShotId || !targetRowId) return;
+
+      const sourceAsset = assetsById.get(sourceAssetId);
+      if (!sourceAsset) return;
+      if (sourceAsset.shotId === targetShotId && sourceAsset.rowId === targetRowId) {
+        return;
+      }
+      const sourceKind = getAssetMediaKind(sourceAsset);
+      const targetKind = getRowMediaKind(targetRowId);
+      if (!sourceKind || !targetKind || sourceKind !== targetKind) return;
+
+      await Meteor.callAsync("assets.duplicate", {
+        storyboardId,
+        sourceAssetId,
+        targetShotId,
+        targetRowId,
+      });
+      return;
+    }
+
     setActiveShotId(null);
     if (!over) return;
     if (!active?.id || !over?.id) return;
     if (active.id === over.id) return;
-    const activeIndex = displayShots.findIndex((shot) => shot._id === active.id);
-    const overIndex = displayShots.findIndex((shot) => shot._id === over.id);
+    if (!activeId.startsWith("shot:") || !overId.startsWith("shot:")) return;
+    const activeShot = activeId.replace("shot:", "");
+    const overShot = overId.replace("shot:", "");
+    const activeIndex = displayShots.findIndex((shot) => shot._id === activeShot);
+    const overIndex = displayShots.findIndex((shot) => shot._id === overShot);
     if (activeIndex === -1 || overIndex === -1) return;
 
     const nextShots = [...displayShots];
@@ -649,8 +857,16 @@ export const StoryboardInitPage = () => {
 
   const handleUploadAsset = async (shotId, rowId, file) => {
     if (!storyboardId || !file) return;
+    let uploadFile = file;
+    if (
+      rowId === "audio" &&
+      typeof file.type === "string" &&
+      file.type.toLowerCase() === "video/mp4"
+    ) {
+      uploadFile = await extractAudioFromMp4File(file);
+    }
     const durationSeconds =
-      rowId === "audio" ? await getAudioDurationInSeconds(file) : null;
+      rowId === "audio" ? await getAudioDurationInSeconds(uploadFile) : null;
     const response = await fetch("/api/assets/upload", {
       method: "POST",
       headers: {
@@ -660,9 +876,9 @@ export const StoryboardInitPage = () => {
         ...(durationSeconds
           ? { "x-duration-seconds": String(durationSeconds) }
           : {}),
-        "Content-Type": file.type || "application/octet-stream",
+        "Content-Type": uploadFile.type || "application/octet-stream",
       },
-      body: file,
+      body: uploadFile,
     });
     if (response.ok) {
       const data = await response.json();
@@ -670,14 +886,48 @@ export const StoryboardInitPage = () => {
     }
   };
 
+  const handleUpdateVideoMetadata = async (shotId, rowId, payload = {}) => {
+    const shot = shots.find((item) => item._id === shotId);
+    if (!shot) return;
+    const asset = getActiveAsset(shot, rowId);
+    if (!asset?._id) return;
+
+    const duration = Number(payload.duration);
+    const width = Number(payload.width);
+    const height = Number(payload.height);
+    const fps = Number(payload.fps);
+    const nextMeta = {
+      ...(asset.meta || {}),
+      ...(Number.isFinite(width) && width > 0 ? { width } : {}),
+      ...(Number.isFinite(height) && height > 0 ? { height } : {}),
+      ...(Number.isFinite(duration) && duration > 0
+        ? { duration_seconds: Math.round(duration) }
+        : {}),
+      ...(Number.isFinite(fps) && fps > 0 ? { fps } : {}),
+    };
+
+    await Meteor.callAsync("assets.update", {
+      assetId: asset._id,
+      meta: nextMeta,
+      ...(Number.isFinite(duration) && duration > 0
+        ? { duration: Math.round(duration) }
+        : {}),
+    });
+  };
+
   const getActiveAsset = (shot, rowId) => {
     const activeField = ACTIVE_FIELD_BY_ROW[rowId];
     const activeId = activeField ? shot?.[activeField] : null;
     if (activeId && assetsById.has(activeId)) {
-      return assetsById.get(activeId);
+      return resolveLinkedAsset(assetsById.get(activeId));
     }
     const list = assetsByShotRowList.get(`${shot._id}:${rowId}`) || [];
-    return list[0] || null;
+    return resolveLinkedAsset(list[0] || null);
+  };
+
+  const getPrimaryImageAsset = (shot) => {
+    if (!shot) return null;
+    return getActiveAsset(shot, "edit-image") || getActiveAsset(shot, "source-image");
   };
 
   const handleSetActiveAsset = async (shotId, rowId, assetId) => {
@@ -736,6 +986,77 @@ export const StoryboardInitPage = () => {
 
   const handleDeleteShot = async (shot) => {
     await Meteor.callAsync("shots.remove", { shotId: shot._id });
+  };
+
+  const handleGenerateTailFrameVideo = async (shotId, updates) => {
+    if (!storyboardId) return;
+    const shot = shots.find((item) => item._id === shotId);
+    if (!shot) return;
+    const endAsset = getPrimaryImageAsset(shot);
+    if (!endAsset?.url) return;
+
+    const blackFrameDataUrl = createBlackFrameDataUrl(
+      activeStoryboard?.aspectRatio || "16:9"
+    );
+    if (!blackFrameDataUrl) return;
+
+    await Meteor.callAsync("assets.referenceToVideo", {
+      storyboardId,
+      shotId,
+      rowId: "output-video",
+      prompt: updates.prompt,
+      model: getSelectedModel("startEndVideo"),
+      image: blackFrameDataUrl,
+      endImage: endAsset.url,
+    });
+  };
+
+  const handleGenerateStartEndVideo = async (shotId, updates) => {
+    if (!storyboardId) return;
+    const shotIndex = displayShots.findIndex((item) => item._id === shotId);
+    if (shotIndex < 0) return;
+    const currentShot = displayShots[shotIndex];
+    const nextShot = displayShots[shotIndex + 1];
+    if (!currentShot || !nextShot) return;
+
+    const startAsset = getPrimaryImageAsset(currentShot);
+    const endAsset = getPrimaryImageAsset(nextShot);
+    if (!startAsset?.url || !endAsset?.url) return;
+
+    await Meteor.callAsync("assets.referenceToVideo", {
+      storyboardId,
+      shotId,
+      rowId: "output-video",
+      prompt: updates.prompt,
+      model: getSelectedModel("startEndVideo"),
+      image: startAsset.url,
+      endImage: endAsset.url,
+    });
+  };
+
+  const getHistoryAssets = (target) => {
+    if (!target) return [];
+    const list = assetsByShotRowList.get(`${target.shotId}:${target.rowId}`) || [];
+    return list.map((asset) => resolveLinkedAsset(asset));
+  };
+
+  const getHistoryActiveAsset = (target) => {
+    if (!target) return null;
+    const shot = shots.find((item) => item._id === target.shotId);
+    if (!shot) return null;
+    return getActiveAsset(shot, target.rowId);
+  };
+
+  const handleDeleteHistoryAsset = async ({ shotId, rowId, assetId }) => {
+    const shot = shots.find((item) => item._id === shotId);
+    if (!shot) return;
+    const current = getActiveAsset(shot, rowId);
+    if (current?._id === assetId) return;
+
+    await Meteor.callAsync("assets.remove", { assetId });
+    if (historySelectedId === assetId) {
+      setHistorySelectedId(current?._id || null);
+    }
   };
 
   return (
@@ -892,25 +1213,51 @@ export const StoryboardInitPage = () => {
 
       {activeStoryboard ? (
         <section className="bg-neutral-200 p-2">
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
             {MODEL_PICKER_COLUMNS.map((column) => (
               <div key={column.id} className="bg-neutral-50 p-2">
-                <label className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-600">
-                  {column.label}
-                </label>
-                <select
-                  className="w-full bg-neutral-200 px-2 py-2 text-xs text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-600"
-                  value={getSelectedModel(column.id) || ""}
-                  onChange={(event) =>
-                    handleModelSelectionChange(column.id, event.target.value)
-                  }
+                <Select
+                  className="w-full"
+                  value={getSelectedModel(column.id) || column.defaultModel || null}
+                  onChange={(value) => {
+                    const nextValue = normalizeSelectValue(value);
+                    if (nextValue) {
+                      handleModelSelectionChange(column.id, nextValue);
+                    }
+                  }}
+                  placeholder="Select model"
                 >
-                  {column.options.map((model) => (
-                    <option key={model.key} value={model.key}>
-                      {getModelLabel(model)}
-                    </option>
-                  ))}
-                </select>
+                  <Label>{column.label}</Label>
+                  <Select.Trigger>
+                    <Select.Value />
+                    <Select.Indicator />
+                  </Select.Trigger>
+                  <Select.Popover>
+                    <div className="p-2">
+                      <input
+                        type="text"
+                        value={getModelPickerQuery(column.id)}
+                        onChange={(event) =>
+                          setModelPickerQuery(column.id, event.target.value)
+                        }
+                        placeholder="Search model..."
+                        className="w-full bg-neutral-200 px-2 py-1 text-xs text-neutral-900 outline-none focus:ring-2 focus:ring-neutral-600"
+                      />
+                    </div>
+                    <ListBox>
+                      {getFilteredModelOptions(column).map((model) => (
+                        <ListBox.Item
+                          key={model.key}
+                          id={model.key}
+                          textValue={getModelLabel(model)}
+                        >
+                          {getModelLabel(model)}
+                          <ListBox.ItemIndicator />
+                        </ListBox.Item>
+                      ))}
+                    </ListBox>
+                  </Select.Popover>
+                </Select>
                 <p className="mt-2 truncate text-[10px] text-neutral-500">
                   {
                     (column.options.find(
@@ -935,7 +1282,11 @@ export const StoryboardInitPage = () => {
         </div>
       ) : (
         <div className="bg-neutral-300 p-2">
-          <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+          <DndContext
+            sensors={sensors}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+          >
             <div className="flex gap-2 overflow-x-auto pb-2">
               {displayShots.length === 0 ? (
                 <div className="w-[260px] min-w-[260px] bg-neutral-50 px-6 py-10 text-sm text-neutral-700">
@@ -959,9 +1310,39 @@ export const StoryboardInitPage = () => {
                             ? getActiveAsset(shot, "edit-image") ||
                               getActiveAsset(shot, "source-image")
                             : null;
+                        const shotIndex = displayShots.findIndex(
+                          (item) => item._id === shot._id
+                        );
+                        const nextShot =
+                          shotIndex >= 0 ? displayShots[shotIndex + 1] : null;
+                        const hasTailFrame =
+                          row.id === "output-video"
+                            ? Boolean(getPrimaryImageAsset(shot)?._id)
+                            : false;
+                        const hasStartEnd =
+                          row.id === "output-video"
+                            ? Boolean(getPrimaryImageAsset(shot)?._id) &&
+                              Boolean(getPrimaryImageAsset(nextShot)?._id)
+                            : false;
+                        const sourceImageAsset = getActiveAsset(shot, "source-image");
+                        const hasSourceImageInput =
+                          row.id === "edit-image"
+                            ? Boolean(sourceImageAsset?.url) &&
+                              getAssetMediaKind(sourceImageAsset) === "image"
+                            : false;
+                        const isSameDropSlot = activeDraggedAsset
+                          ? activeDraggedAsset.shotId === shot._id &&
+                            activeDraggedAsset.rowId === row.id
+                          : false;
+                        const canDropAsset =
+                          activeDraggedAsset
+                            ? getAssetMediaKind(activeDraggedAsset) ===
+                                getRowMediaKind(row.id) && !isSameDropSlot
+                            : false;
                         return (
                           <AssetCard
                             key={row.id}
+                            shotId={shot._id}
                             row={row}
                             asset={asset}
                             historyCount={historyList.length}
@@ -974,7 +1355,21 @@ export const StoryboardInitPage = () => {
                             onGenerateReference={(updates) =>
                               handleGenerateReferenceAsset(shot._id, row.id, updates)
                             }
+                            onGenerateTailFrame={(updates) =>
+                              handleGenerateTailFrameVideo(shot._id, updates)
+                            }
+                            onGenerateStartEnd={(updates) =>
+                              handleGenerateStartEndVideo(shot._id, updates)
+                            }
                             hasReference={Boolean(referenceAsset)}
+                            hasTailFrame={hasTailFrame}
+                            hasStartEnd={hasStartEnd}
+                            hasSourceInput={hasSourceImageInput}
+                            canDropAsset={canDropAsset}
+                            isDropEnabled={Boolean(activeDraggedAsset)}
+                            onUpdateVideoMetadata={(payload) =>
+                              handleUpdateVideoMetadata(shot._id, row.id, payload)
+                            }
                             onGenerateCurrent={(updates) =>
                               handleGenerateCurrentAsset(shot._id, row.id, updates)
                             }
@@ -1012,11 +1407,71 @@ export const StoryboardInitPage = () => {
                     {ROWS.map((row) => (
                       <AssetCard
                         key={row.id}
+                        shotId={activeShotId}
                         row={row}
                         asset={null}
                         onSave={() => {}}
+                        onGenerate={() => {}}
+                        onGenerateCurrent={() => {}}
+                        onGenerateTailFrame={() => {}}
+                        onGenerateStartEnd={() => {}}
+                        onGenerateReference={() => {}}
+                        hasReference={false}
+                        hasCurrent={false}
+                        hasSourceInput={false}
+                        hasTailFrame={false}
+                        hasStartEnd={false}
+                        canDropAsset={false}
+                        isDropEnabled={false}
+                        onUpdateVideoMetadata={() => {}}
+                        onOpenHistory={() => {}}
+                        onUpload={() => {}}
                       />
                     ))}
+                  </div>
+                </div>
+              ) : activeDraggedAsset ? (
+                <div className="w-[260px] min-w-[260px] overflow-hidden bg-neutral-50 shadow-sm">
+                  <div className="bg-neutral-600 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-50">
+                    {ROWS.find((row) => row.id === activeDraggedAsset.rowId)?.label || "asset"}
+                  </div>
+                  {getAssetMediaKind(activeDraggedAsset) === "audio" ? (
+                    activeDraggedAsset.waveformUrl ? (
+                      <img
+                        src={activeDraggedAsset.waveformUrl}
+                        alt="Audio ghost"
+                        className="h-24 w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-24 items-center justify-center bg-neutral-200 text-xs text-neutral-500">
+                        Audio
+                      </div>
+                    )
+                  ) : getAssetMediaKind(activeDraggedAsset) === "video" ? (
+                    activeDraggedAsset.thumbnailUrl ? (
+                      <img
+                        src={activeDraggedAsset.thumbnailUrl}
+                        alt="Video ghost"
+                        className="h-24 w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-24 items-center justify-center bg-neutral-200 text-xs text-neutral-500">
+                        Video
+                      </div>
+                    )
+                  ) : activeDraggedAsset.url ? (
+                    <img
+                      src={activeDraggedAsset.url}
+                      alt="Image ghost"
+                      className="h-24 w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-24 items-center justify-center bg-neutral-200 text-xs text-neutral-500">
+                      Image
+                    </div>
+                  )}
+                  <div className="truncate px-3 py-2 text-[11px] text-neutral-700">
+                    {activeDraggedAsset.prompt || "No prompt"}
                   </div>
                 </div>
               ) : null}
@@ -1063,220 +1518,181 @@ export const StoryboardInitPage = () => {
             className="absolute inset-0 bg-neutral-900/40"
             onClick={() => setHistoryTarget(null)}
           />
-          <div className="relative w-full max-w-4xl rounded-3xl bg-neutral-50 p-6">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.3em] text-neutral-600">
-                  History
-                </p>
-                <h2 className="mt-2 text-xl font-semibold text-neutral-900">
-                  Asset history
-                </h2>
-                <p className="mt-2 text-sm text-neutral-500">
-                  Current prompt:{" "}
-                  <span className="font-semibold text-neutral-700">
-                    {(() => {
-                      const shot = shots.find(
-                        (item) => item._id === historyTarget.shotId
-                      );
-                      if (!shot) return "—";
-                      const current = getActiveAsset(
-                        shot,
-                        historyTarget.rowId
-                      );
-                      return current?.prompt || "—";
-                    })()}
-                  </span>
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setHistoryTarget(null)}
-                className="rounded-full bg-neutral-200 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-neutral-500"
-              >
-                Close
-              </button>
-            </div>
-            {historyTarget.rowId === "audio" ? (
-              <div className="flex flex-col gap-4">
-                <div className="overflow-hidden rounded-2xl bg-neutral-100 px-4 py-4">
-                  {historySelectedId ? (
-                    <audio controls className="w-full">
-                      <source
-                        src={assetsById.get(historySelectedId)?.url || ""}
-                      />
-                    </audio>
-                  ) : (
-                    <div className="flex h-16 items-center justify-center text-sm text-neutral-400">
-                      No audio selected
+          <div className="relative w-full max-w-5xl bg-neutral-50 p-4 sm:p-5">
+            {(() => {
+              const historyAssets = getHistoryAssets(historyTarget);
+              const activeAsset = getHistoryActiveAsset(historyTarget);
+              const activeAssetId = activeAsset?._id || null;
+              const isVideoRow =
+                historyTarget.rowId === "source-clip" ||
+                historyTarget.rowId === "output-video";
+              const isAudioRow = historyTarget.rowId === "audio";
+
+              return (
+                <>
+                  <div className="flex items-start justify-between gap-3 bg-neutral-200 p-3">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-600">
+                        Asset Preview
+                      </p>
+                      <h2 className="mt-1 text-lg font-semibold text-neutral-900">
+                        Active asset
+                      </h2>
                     </div>
-                  )}
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                  {(assetsByShotRowList.get(
-                    `${historyTarget.shotId}:${historyTarget.rowId}`
-                  ) || []).map((asset) => (
-                    <button
-                      key={asset._id}
-                      type="button"
-                      className={`group overflow-hidden rounded-2xl bg-neutral-100 text-left transition ${
-                        historySelectedId === asset._id
-                          ? "ring-1 ring-neutral-400"
-                          : ""
-                      }`}
-                      onClick={() => {
-                        setHistorySelectedId(asset._id);
-                        handleSetActiveAsset(
-                          historyTarget.shotId,
-                          historyTarget.rowId,
-                          asset._id
-                        );
-                      }}
-                    >
-                      {asset.waveformUrl ? (
-                        <img
-                          src={asset.waveformUrl}
-                          alt="Audio waveform"
-                          className="h-24 w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-24 items-center justify-center text-sm text-neutral-400">
-                          No waveform
-                        </div>
-                      )}
-                      <div className="grid gap-2 px-3 py-3 text-xs text-neutral-600">
-                        <div className="font-semibold text-neutral-900">
-                          {asset.prompt || "No prompt"}
-                        </div>
-                        <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-600 opacity-0 transition group-hover:opacity-100">
-                          Set active
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : historyTarget.rowId === "source-clip" ||
-              historyTarget.rowId === "output-video" ? (
-              <div className="flex flex-col gap-4">
-                <div className="overflow-hidden rounded-2xl bg-neutral-900">
-                  {historySelectedId ? (
-                    <video
-                      ref={historyVideoRef}
-                      src={
-                        assetsById.get(historySelectedId)?.url ||
-                        assetsById.get(historySelectedId)?.thumbnailUrl ||
-                        ""
-                      }
-                      controls
-                      className="h-64 w-full object-contain"
-                    />
-                  ) : (
-                    <div className="flex h-64 items-center justify-center text-sm text-neutral-400">
-                      No video selected
-                    </div>
-                  )}
-                </div>
-                <div className="flex items-center justify-between">
-                  <p className="text-sm text-neutral-500">
-                    Select a clip below to activate it or capture a frame.
-                  </p>
-                  <Button
-                    variant="tertiary"
-                    className="rounded-full bg-neutral-900 px-5 text-white hover:bg-neutral-800"
-                    onPress={handleCaptureFrame}
-                  >
-                    Capture current frame → source image
-                  </Button>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                  {(assetsByShotRowList.get(
-                    `${historyTarget.shotId}:${historyTarget.rowId}`
-                  ) || []).map((asset) => (
-                    <button
-                      key={asset._id}
-                      type="button"
-                      className={`group overflow-hidden rounded-2xl bg-neutral-100 text-left transition ${
-                        historySelectedId === asset._id
-                          ? "ring-1 ring-neutral-400"
-                          : ""
-                      }`}
-                      onClick={() => {
-                        setHistorySelectedId(asset._id);
-                        handleSetActiveAsset(
-                          historyTarget.shotId,
-                          historyTarget.rowId,
-                          asset._id
-                        );
-                      }}
-                    >
-                      {asset.thumbnailUrl ? (
-                        <img
-                          src={asset.thumbnailUrl}
-                          alt="Video thumbnail"
-                          className="h-32 w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-32 items-center justify-center text-sm text-neutral-400">
-                          No thumbnail
-                        </div>
-                      )}
-                      <div className="grid gap-2 px-3 py-3 text-xs text-neutral-600">
-                        <div className="font-semibold text-neutral-900">
-                          {asset.prompt || "No prompt"}
-                        </div>
-                        <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-600 opacity-0 transition group-hover:opacity-100">
-                          Set active
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {(assetsByShotRowList.get(
-                  `${historyTarget.shotId}:${historyTarget.rowId}`
-                ) || []).map((asset) => (
-                  <div
-                    key={asset._id}
-                    className="group cursor-pointer overflow-hidden rounded-2xl bg-neutral-100 transition"
-                    onClick={() =>
-                      handleSetActiveAsset(
-                        historyTarget.shotId,
-                        historyTarget.rowId,
-                        asset._id
-                      )
-                    }
-                  >
-                    {asset.url ? (
-                      <img
-                        src={asset.url}
-                        alt="Asset history"
-                        className="h-40 w-full object-cover"
-                      />
-                    ) : (
-                      <div className="flex h-40 items-center justify-center text-sm text-neutral-400">
-                        No preview
-                      </div>
-                    )}
-                    <div className="grid gap-2 px-3 py-3 text-xs text-neutral-600">
-                      <div className="font-semibold text-neutral-900">
-                        {asset.prompt || "No prompt"}
-                      </div>
-                      <div className="text-neutral-500">
-                        {asset.meta?.width && asset.meta?.height
-                          ? `${asset.meta.width}×${asset.meta.height}`
-                          : "Unknown size"}
-                      </div>
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-600 opacity-0 transition group-hover:opacity-100">
-                        Set active
-                      </div>
+                    <div className="flex items-center gap-2">
+                      {isVideoRow ? (
+                        <Button
+                          variant="tertiary"
+                          className="rounded-full bg-neutral-900 px-3 text-xs text-neutral-50"
+                          onPress={handleCaptureFrame}
+                        >
+                          Capture frame
+                        </Button>
+                      ) : null}
+                      <Button
+                        variant="tertiary"
+                        className="rounded-full bg-neutral-300 px-3 text-xs text-neutral-700"
+                        onPress={() => setHistoryTarget(null)}
+                      >
+                        Close
+                      </Button>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
+
+                  <div className="mt-2 bg-neutral-100 p-3">
+                    {isAudioRow ? (
+                      activeAsset?.url ? (
+                        <audio controls className="w-full">
+                          <source src={activeAsset.url} />
+                        </audio>
+                      ) : (
+                        <div className="flex h-20 items-center justify-center text-sm text-neutral-500">
+                          No active audio
+                        </div>
+                      )
+                    ) : isVideoRow ? (
+                      activeAsset?.url ? (
+                        <video
+                          ref={historyVideoRef}
+                          src={activeAsset.url}
+                          controls
+                          className="h-72 w-full bg-neutral-900 object-contain"
+                        />
+                      ) : (
+                        <div className="flex h-72 items-center justify-center text-sm text-neutral-500">
+                          No active video
+                        </div>
+                      )
+                    ) : activeAsset?.url ? (
+                      <img
+                        src={activeAsset.url}
+                        alt="Active asset"
+                        className="h-72 w-full object-contain"
+                      />
+                    ) : (
+                      <div className="flex h-72 items-center justify-center text-sm text-neutral-500">
+                        No active image
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-2 bg-neutral-200 p-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-neutral-700">
+                        History Assets
+                      </h3>
+                      <span className="text-xs text-neutral-500">
+                        {historyAssets.length} item(s)
+                      </span>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {historyAssets.map((asset) => {
+                        const isActive = activeAssetId === asset._id;
+                        return (
+                          <div
+                            key={asset._id}
+                            className={`cursor-pointer bg-neutral-50 p-2 ${
+                              isActive ? "ring-1 ring-neutral-700" : ""
+                            }`}
+                            onClick={() => {
+                              setHistorySelectedId(asset._id);
+                              handleSetActiveAsset(
+                                historyTarget.shotId,
+                                historyTarget.rowId,
+                                asset._id
+                              );
+                            }}
+                          >
+                            {isAudioRow ? (
+                              asset.waveformUrl ? (
+                                <img
+                                  src={asset.waveformUrl}
+                                  alt="Audio waveform"
+                                  className="h-20 w-full object-cover"
+                                />
+                              ) : (
+                                <div className="flex h-20 items-center justify-center bg-neutral-200 text-xs text-neutral-500">
+                                  No waveform
+                                </div>
+                              )
+                            ) : isVideoRow ? (
+                              asset.thumbnailUrl ? (
+                                <img
+                                  src={asset.thumbnailUrl}
+                                  alt="Video thumbnail"
+                                  className="h-20 w-full object-cover"
+                                />
+                              ) : (
+                                <div className="flex h-20 items-center justify-center bg-neutral-200 text-xs text-neutral-500">
+                                  No thumbnail
+                                </div>
+                              )
+                            ) : asset.url ? (
+                              <img
+                                src={asset.url}
+                                alt="Image history"
+                                className="h-20 w-full object-cover"
+                              />
+                            ) : (
+                              <div className="flex h-20 items-center justify-center bg-neutral-200 text-xs text-neutral-500">
+                                No preview
+                              </div>
+                            )}
+
+                            <div className="mt-2 flex items-center justify-between gap-2">
+                              <span className="truncate text-xs text-neutral-700">
+                                {asset.prompt || "No prompt"}
+                              </span>
+                              {!isActive ? (
+                                <Button
+                                  size="sm"
+                                  variant="tertiary"
+                                  className="rounded-full bg-neutral-900 px-2 text-[10px] text-neutral-50"
+                                  onPress={(event) => {
+                                    event?.stopPropagation?.();
+                                    handleDeleteHistoryAsset({
+                                      shotId: historyTarget.shotId,
+                                      rowId: historyTarget.rowId,
+                                      assetId: asset._id,
+                                    });
+                                  }}
+                                >
+                                  Delete
+                                </Button>
+                              ) : (
+                                <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-neutral-600">
+                                  Active
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       ) : null}
