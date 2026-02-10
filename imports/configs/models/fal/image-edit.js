@@ -48,6 +48,30 @@ export const FAL_IMAGE_EDIT_MODELS = {
       numImages: 1,
       outputFormat: 'png'
     }
+  },
+  grokImagineImageEdit: {
+    key: 'fal.image_edit.grok_imagine_image_edit',
+    provider: 'fal',
+    task: ASSET_TASKS.IMAGE_EDIT,
+    modelId: 'xai/grok-imagine-image/edit',
+    inputSchema: {
+      prompt: { required: true, type: 'string' },
+      image: { required: true, type: 'string' },
+      numImages: { required: false, type: 'number' },
+      outputFormat: { required: false, type: 'string' },
+      syncMode: { required: false, type: 'boolean' }
+    },
+    fieldMap: {
+      prompt: 'prompt',
+      image: 'image_url',
+      numImages: 'num_images',
+      outputFormat: 'output_format',
+      syncMode: 'sync_mode'
+    },
+    defaults: {
+      numImages: 1,
+      outputFormat: 'jpeg'
+    }
   }
 }
 

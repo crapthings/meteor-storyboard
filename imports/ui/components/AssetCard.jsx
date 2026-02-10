@@ -12,6 +12,7 @@ import {
   mdiVideo,
   mdiMicrophone,
   mdiUpload,
+  mdiDownload,
 } from "@mdi/js";
 import WaveSurfer from "wavesurfer.js";
 
@@ -424,17 +425,6 @@ export const AssetCard = ({
   };
 
   const status = asset?.status || "idle";
-  const statusTone =
-    status === "completed"
-      ? "bg-neutral-900 text-neutral-50"
-      : status === "processing"
-        ? "bg-neutral-600 text-neutral-50"
-        : status === "pending"
-          ? "bg-neutral-300 text-neutral-900"
-          : status === "error"
-            ? "bg-neutral-900 text-neutral-50"
-            : "bg-neutral-300 text-neutral-900";
-
   const headerIcon = getHeaderIcon(row.id);
   const saveIcon = mdiContentSave;
   const generateIcon = mdiWandSparkles;
@@ -452,6 +442,17 @@ export const AssetCard = ({
     const file = event.target.files?.[0];
     if (!file) return;
     onUpload(file);
+  };
+
+  const handleDownloadClick = () => {
+    if (!asset?.url) return;
+    const link = document.createElement("a");
+    link.href = asset.url;
+    link.download = asset?.meta?.file_name || `${row.id}-asset`;
+    link.rel = "noopener";
+    document.body.append(link);
+    link.click();
+    link.remove();
   };
 
   const dropClass = isOver
@@ -492,18 +493,17 @@ export const AssetCard = ({
           >
             <Icon path={mdiUpload} size={0.7} />
           </Button>
-          <span
-            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] ${statusTone}`}
+          <Button
+            size="sm"
+            isIconOnly
+            variant="tertiary"
+            aria-label="Download asset"
+            className="h-7 w-7 rounded-full bg-neutral-50 text-neutral-900 disabled:opacity-40"
+            onPress={handleDownloadClick}
+            isDisabled={!asset?.url}
           >
-            {isProcessing ? (
-              <>
-                <span className="h-2.5 w-2.5 animate-spin rounded-full border border-neutral-50 border-t-transparent" />
-                Processing
-              </>
-            ) : (
-              status
-            )}
-          </span>
+            <Icon path={mdiDownload} size={0.7} />
+          </Button>
         </div>
       </div>
       <div className="flex flex-1 flex-col gap-2 px-3 py-3">
