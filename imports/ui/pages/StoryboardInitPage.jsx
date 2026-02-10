@@ -834,6 +834,7 @@ export const StoryboardInitPage = () => {
       shotId,
       rowId,
       model: getSelectedModel("textToImage"),
+      aspectRatio: activeStoryboard?.aspectRatio || "16:9",
       ...updates,
     });
   };
